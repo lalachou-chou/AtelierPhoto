@@ -1,0 +1,73 @@
+# Environnements et caches Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.egg-info/
+
+# Compilation et distributions : publier les binaires en Releases, pas dans Git
+build/
+dist/
+deployment/
+pysidedeploy.spec
+.build-cache/
+.build-tools/
+nuitka-crash-report.xml
+*.build/
+*.dist/
+*.onefile-build/
+
+# Poids téléchargés à la préparation (manifestes et licences restent suivis)
+atelier/assets/*.onnx
+atelier/assets/*.onnx_data
+
+# Résultats de diagnostic et bibliothèques locales de travail
+test-output/
+*.log
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+/data/
+/library/
+/profiles/
+/photos/
+/rush/
+/exports/
+
+# Configuration privée ; les exemples peuvent être versionnés
+.env
+.env.*
+!.env.example
+!.env.sample
+.aws/
+.ssh/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Fichiers propres au système et aux éditeurs
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+

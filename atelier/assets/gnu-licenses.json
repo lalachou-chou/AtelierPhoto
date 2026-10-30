@@ -1,0 +1,14 @@
+{
+  "LGPL-3.0.txt": {
+    "source": "https://www.gnu.org/licenses/lgpl-3.0.txt",
+    "sha256": "7d3a95e5e06978064ed3f8e2b7c8f845e7fd8a405294727cc708f94cb83b8059"
+  },
+  "GPL-3.0.txt": {
+    "source": "https://raw.githubusercontent.com/qt/qtbase/dev/LICENSES/GPL-3.0-only.txt",
+    "sha256": "0b383d5a63da644f628d99c33976ea6487ed89aaa59f0b3257992deac1171e6b"
+  },
+  "OpenSSL-LICENSE.txt": {
+    "source": "https://raw.githubusercontent.com/openssl/openssl/openssl-3.5.8/LICENSE.txt",
+    "sha256": "ed72ce2b51ee58f117e5a021e2e04af158857f40269fbc03491f0b2a99dbcc96"
+  }
+}

@@ -1,0 +1,8 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Les scripts Mac/Linux doivent fonctionner après un checkout sous Windows.
+*.command text eol=lf
+*.sh text eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

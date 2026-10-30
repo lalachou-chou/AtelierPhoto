@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Atelier Photo — tirage et diaphragme</title>
+  <rect x="48" y="48" width="928" height="928" rx="216" fill="#202832"/>
+  <g transform="rotate(-8 512 512)">
+    <rect x="228" y="190" width="568" height="644" rx="30" fill="#f4f0e7"/>
+    <rect x="262" y="224" width="500" height="468" rx="12" fill="#202832"/>
+    <g transform="translate(512 458)" stroke="#202832" stroke-width="12" stroke-linejoin="round">
+      <path d="M0 -172 149 -86 68 0 34 -59Z" fill="#b4ebd8"/>
+      <path d="M0 -172 149 -86 68 0 34 -59Z" transform="rotate(60)" fill="#91dec7"/>
+      <path d="M0 -172 149 -86 68 0 34 -59Z" transform="rotate(120)" fill="#72c6b2"/>
+      <path d="M0 -172 149 -86 68 0 34 -59Z" transform="rotate(180)" fill="#91dec7"/>
+      <path d="M0 -172 149 -86 68 0 34 -59Z" transform="rotate(240)" fill="#b4ebd8"/>
+      <path d="M0 -172 149 -86 68 0 34 -59Z" transform="rotate(300)" fill="#d4f2e5"/>
+    </g>
+    <rect x="262" y="744" width="132" height="24" rx="12" fill="#ce9a58"/>
+  </g>
+</svg>
