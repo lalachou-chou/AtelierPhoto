@@ -1,0 +1,14 @@
+{
+  "repository": "onnx-community/dinov3-vits16-pretrain-lvd1689m-ONNX",
+  "revision": "48988dfe73065df8d6f5ccc0edc7c8bcf307de41",
+  "input_size": [
+    448,
+    448
+  ],
+  "dimension": 384,
+  "license": "DINOv3 License",
+  "sha256": {
+    "model.onnx": "bb75e9e30ff382ecdbd150266445ab41272be4acc85fd3563218dd89781e36da",
+    "model.onnx_data": "1eff0bb9f4fdef831ca61c8bc2b5c88d8cc21ef4756d3b483d9b9c15d8d5d27f"
+  }
+}
