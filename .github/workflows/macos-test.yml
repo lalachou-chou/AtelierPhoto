@@ -1,0 +1,48 @@
+name: Construire le DMG Mac de test
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      QT_QPA_PLATFORM: offscreen
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Version
+        shell: bash
+        run: echo "ATELIER_VERSION=$(python -c 'import atelier; print(atelier.__version__)')" >> "$GITHUB_ENV"
+      - name: Préparer les dépendances sur le serveur Mac
+        run: |
+          python -c "import platform; assert platform.machine() == 'arm64', 'Apple Silicon required'"
+          python -m pip install -r requirements-tested.txt
+          python -m pip install -e ".[dev]" Nuitka==4.1.1
+          python scripts/download_model.py
+          python scripts/download_licenses.py
+          python scripts/verify_macos_runtime.py
+      - name: Tester les sources
+        run: python -m pytest -q
+      - name: Compiler l'application autonome
+        run: python scripts/build_release.py
+      - name: Vérifier le binaire et créer le DMG
+        run: |
+          python scripts/macos_bundle.py dist/${{ env.ATELIER_VERSION }}/AtelierPhoto.app --self-test test-output/packaged.json --report test-output/macos-bundle.json
+          python scripts/create_macos_dmg.py dist/${{ env.ATELIER_VERSION }}/AtelierPhoto.app
+      - name: Télécharger cet installateur pour le testeur
+        uses: actions/upload-artifact@v4
+        with:
+          name: AtelierPhoto-Mac-test
+          path: dist/*macOS-arm64-test.dmg
+          if-no-files-found: error
+          compression-level: 0
+      - name: Rapports de diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AtelierPhoto-Mac-diagnostics
+          path: test-output/*.json
