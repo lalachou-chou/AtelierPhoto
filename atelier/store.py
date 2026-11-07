@@ -273,6 +273,20 @@ class Store:
             self.db.execute("INSERT OR IGNORE INTO reportages(id,profile,name,paths,enabled,ready) VALUES(?,?,?,?,?,?)",
                             (record["id"], profile, record["name"], pack(paths), int(ready), int(ready)))
 
+    def forget_source(self, profile, owner, role, path):
+        """Drop a source photo set aside as corrupt from a reportage or reference group."""
+        path = str(path)
+        with self.db:
+            row = self.db.execute("SELECT paths FROM reportages WHERE profile=? AND id=?", (profile, owner)).fetchone()
+            if row and role in ("rush", "kept"):
+                paths = json.loads(row["paths"])
+                paths[role] = [p for p in paths.get(role, []) if p != path]
+                self.db.execute("UPDATE reportages SET paths=? WHERE profile=? AND id=?", (pack(paths), profile, owner))
+            row = self.db.execute("SELECT paths FROM reference_groups WHERE profile=? AND id=?", (profile, owner)).fetchone()
+            if row and role == "reference":
+                paths = [p for p in json.loads(row["paths"]) if p != path]
+                self.db.execute("UPDATE reference_groups SET paths=? WHERE profile=? AND id=?", (pack(paths), profile, owner))
+
     def reportages(self, profile):
         records = self.rows("SELECT * FROM reportages WHERE profile=? ORDER BY rowid", (profile,))
         for record in records:

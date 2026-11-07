@@ -44,7 +44,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .config import APP_NAME, PHOTO_FILTER, data_directory, discover, resource_directory
+from .config import (
+    APP_NAME,
+    PHOTO_FILTER,
+    QUARANTINE_DIR,
+    data_directory,
+    discover,
+    resource_directory,
+)
 from .imaging import LIMITS
 from .pipeline import (
     analysis_job,
@@ -97,6 +104,18 @@ QScrollArea#profilePanel QScrollBar::handle:vertical { background: #536173; min-
 QScrollArea#profilePanel QScrollBar::add-line:vertical, QScrollArea#profilePanel QScrollBar::sub-line:vertical { height: 0; }
 QScrollArea#profilePanel QScrollBar::add-page:vertical, QScrollArea#profilePanel QScrollBar::sub-page:vertical { background: transparent; }
 """
+
+
+def quarantine_message(entries):
+    """Corrupt RAW files set aside by a finished task; the task itself succeeded."""
+    moved = [e for e in entries if e.get("to")]
+    lines = [f"{len(entries)} fichier(s) RAW corrompu(s) ignoré(s) ; les autres photos ont bien été traitées."]
+    if moved:
+        lines.append(f"Déplacé(s) dans un sous-dossier « {QUARANTINE_DIR} » à côté de l’original :")
+    lines += [f"• {e['file']}" + ("" if e.get("to") else " (non déplacé : dossier en lecture seule)") for e in entries[:12]]
+    if len(entries) > 12:
+        lines.append(f"… et {len(entries) - 12} autre(s).")
+    return "\n".join(lines)
 
 
 def label(text, name=None):
@@ -1107,6 +1126,8 @@ class Window(QMainWindow):
                     self.error(job["error"])
                 if job["payload"].get("errors"):
                     self.error("Certains fichiers n’ont pas été traités :\n" + "\n".join(f"{e['file']} : {e['error']}" for e in job["payload"]["errors"][:12]))
+                if job["payload"].get("quarantined"):
+                    QMessageBox.information(self, APP_NAME, quarantine_message(job["payload"]["quarantined"]))
                 if job["kind"] == "training" and job["state"] == "done":
                     summary = job["payload"].get("summary") or {}
                     message = (f"Profil appris : {summary.get('photos')} photos dont {summary.get('kept')} retenues"

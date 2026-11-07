@@ -7,6 +7,11 @@ from PIL import Image, ImageCms, ImageFilter, ImageOps
 
 from .config import EXTENSIONS, RAW_EXTENSIONS
 
+
+class CorruptPhoto(ValueError):
+    """A RAW file whose content is damaged (not merely an unsupported camera)."""
+
+
 SRGB = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
 
 
@@ -50,6 +55,9 @@ def decode(path, preview=False):
                 pixels = raw.postprocess(use_camera_wb=True, no_auto_bright=True,
                                          output_bps=16, output_color=rawpy.ColorSpace.sRGB,
                                          half_size=preview, gamma=(2.4, 12.92))
+        except (rawpy.LibRawDataError, rawpy.LibRawIOError) as exc:
+            # Readable file, damaged or truncated image data.
+            raise CorruptPhoto(f"RAW corrompu ou incomplet : {exc}") from exc
         except rawpy.LibRawError as exc:
             raise ValueError(f"RAW illisible ou boîtier non reconnu : {exc}") from exc
         if preview:

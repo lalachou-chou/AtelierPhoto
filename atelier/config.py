@@ -5,6 +5,8 @@ from pathlib import Path
 APP_NAME = "Atelier Photo"
 RAW_EXTENSIONS = {".arw", ".cr2", ".cr3", ".nef", ".nrw", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw", ".3fr", ".iiq", ".rwl", ".x3f"}
 EXTENSIONS = RAW_EXTENSIONS | {".jpg", ".jpeg", ".png"}
+# Damaged RAW files are moved here, next to their original folder; never scanned.
+QUARANTINE_DIR = "Photos corrompues"
 PHOTO_FILTER = "Photos (" + " ".join("*" + ext for ext in sorted(EXTENSIONS)) + ");;Tous les fichiers (*)"
 MODEL_NAME = "DINOv3 Small ViT-S/16 · 448×448 · ONNX float32"
 MODEL_SIZE = 448
@@ -47,6 +49,8 @@ def discover(paths):
         for candidate in candidates:
             # "._DSC0001.jpeg" files are macOS metadata copied to non-Apple disks.
             hidden = is_folder and candidate.name.startswith(".")
+            if is_folder and QUARANTINE_DIR in candidate.relative_to(path).parts[:-1]:
+                continue
             if not hidden and (not is_folder or candidate.suffix.lower() in EXTENSIONS) and candidate.is_file():
                 result[str(candidate)] = None
     return list(result)

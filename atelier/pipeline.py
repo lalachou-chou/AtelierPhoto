@@ -10,12 +10,13 @@ import numpy as np
 
 from . import look as looks
 from .analysis import propose, reselect
-from .config import RAW_EXTENSIONS
+from .config import QUARANTINE_DIR, RAW_EXTENSIONS
 from .dino import DinoEncoder
 from .imaging import (
     IDENTITY_RECIPE,
     IDENTITY_STYLE,
     SRGB,
+    CorruptPhoto,
     as_image,
     capture_time,
     decode,
@@ -38,6 +39,41 @@ def decode_for_analysis(path):
         if exc.errno is not None:
             raise
         raise ValueError(f"Photo illisible : {exc}") from exc
+
+
+def quarantine(path):
+    """Move a corrupt photo and its XMP sidecar into ``Photos corrompues`` beside it.
+
+    Returns the new path, or None when the folder is read-only (the photo is then
+    only excluded). A disk that cannot be read stays a resumable OSError.
+    """
+    source = Path(path)
+    with open(source, "rb") as stream:
+        while stream.read(1024 * 1024):
+            pass
+    try:
+        folder = source.parent / QUARANTINE_DIR
+        folder.mkdir(exist_ok=True)
+        for number in range(1, 10000):
+            target = folder / (source.name if number == 1 else f"{source.stem} ({number}){source.suffix}")
+            if not target.exists():
+                break
+        else:
+            return None
+        # Same volume; never overwrite an earlier quarantined file.
+        os.rename(source, target)
+    except PermissionError:
+        return None
+    for extension in (".xmp", ".XMP"):
+        companion = source.with_suffix(extension)
+        if companion.is_file():
+            try:
+                if not target.with_suffix(extension).exists():
+                    os.rename(companion, target.with_suffix(extension))
+            except OSError:
+                pass
+            break
+    return str(target)
 
 
 def reference_job(store, profile, paths):
@@ -375,6 +411,18 @@ def run_job(root, identifier, events, cancel, encoder_factory=DinoEncoder, prepa
                     raise ValueError("Ce lot nécessite la version du modèle utilisée à sa création.")
         items = payload["items"] if kind in ("export", "training") else payload["paths"]
         pending = {}
+        moved = {entry["from"] for entry in payload.get("quarantined", [])}
+
+        def set_aside(path, exc, owner=None, role=None):
+            """Corrupt RAW: out of its folder and of the profile catalog, task continues."""
+            target = quarantine(path)
+            payload.setdefault("quarantined", []).append(
+                {"file": Path(path).name, "from": str(path), "to": target, "error": str(exc)})
+            moved.add(str(path))
+            if owner:
+                store.forget_source(profile, owner, role, path)
+            store.update_job(identifier, payload=payload)
+            return target
         if kind in ("analysis", "training") and preparation_workers:
             # Bound decoded photos in memory; never enqueue a whole reportage.
             pool = ThreadPoolExecutor(max_workers=preparation_workers)
@@ -416,18 +464,23 @@ def run_job(root, identifier, events, cancel, encoder_factory=DinoEncoder, prepa
                     output = export_one(item, payload["destination"], payload["format"], payload.get("filter", True), payload.get("look"))
                     payload["outputs"].append(output)
                 elif kind == "references":
-                    _save_reference(store, profile, item, encoder)
+                    if item not in moved:
+                        _save_reference(store, profile, item, encoder)
                 elif kind == "training":
                     reportage = item.get("reportage", payload.get("reportage"))
-                    if item["role"] == "reference":
+                    if item["path"] in moved:
+                        # Same file listed in the rush and the kept photos.
+                        store.forget_source(profile, reportage, item["role"], item["path"])
+                    elif item["role"] == "reference":
                         _save_reference(store, profile, item["path"], encoder, reportage)
                     elif not store.has_training(profile, reportage, item["role"], item["path"]):
                         _save_training_photo(store, profile, reportage, item, prepared(index), encoder.version)
                 elif kind == "analysis":
                     batch_id = payload["batch"]
                     existing = store.db.execute("SELECT id FROM photos WHERE batch=? AND path=?", (batch_id, item)).fetchone()
-                    if not existing:
+                    if not existing and item not in moved:
                         photo_id = uid()
+                        source = item
                         try:
                             photo = prepared(index)
                             image, stats, embedding = photo["image"], photo["features"], photo["embedding"]
@@ -440,19 +493,30 @@ def run_job(root, identifier, events, cancel, encoder_factory=DinoEncoder, prepa
                             thumb = image.copy()
                             thumb.thumbnail((240, 180))
                             thumb.save(proxy.with_suffix(".jpg"), quality=85)
+                        except CorruptPhoto as exc:
+                            target = set_aside(item, exc)
+                            source = target or item
+                            message = (f"RAW corrompu, déplacé dans « {QUARANTINE_DIR} »" if target
+                                       else "RAW corrompu, ignoré (dossier en lecture seule)")
+                            data = {"error": f"{message} : {exc}", "decision": "error", "proposed": "error"}
                         except (ValueError, RuntimeError) as exc:
                             data = {"error": str(exc), "decision": "error", "proposed": "error"}
-                        store.save_photo(photo_id, batch_id, item, data)
+                        store.save_photo(photo_id, batch_id, source, data)
                 else:
                     raise ValueError("Type de tâche inconnu")
             except OSError:
                 # Disk, missing-source, permission errors must remain resumable.
                 raise
             except (ValueError, RuntimeError) as exc:
-                error = {"file": label, "error": str(exc)}
-                if kind == "training":
-                    error["reportage"] = item.get("reportage", payload.get("reportage"))
-                payload.setdefault("errors", []).append(error)
+                if isinstance(exc, CorruptPhoto) and kind in ("training", "references"):
+                    path = item["path"] if kind == "training" else item
+                    owner = item.get("reportage", payload.get("reportage")) if kind == "training" else None
+                    set_aside(path, exc, owner, item["role"] if kind == "training" else None)
+                else:
+                    error = {"file": label, "error": str(exc)}
+                    if kind == "training":
+                        error["reportage"] = item.get("reportage", payload.get("reportage"))
+                    payload.setdefault("errors", []).append(error)
             pending.pop(index, None)
             if kind == "analysis" or (kind == "training" and len(payload.get("errors", [])) == known_errors):
                 # Only the cursor: rewriting long path lists for every photo is wasteful.

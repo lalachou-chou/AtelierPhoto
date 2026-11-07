@@ -223,6 +223,11 @@ Les retouches sont globales, sans masque, recadrage ou génération de détails.
 
 Le filtre appris n’est pas transposé dans le XMP : seuls les réglages globaux
 compatibles y figurent, sans conversion de température en Kelvin pour les RAW.
+Un RAW corrompu ou tronqué n’interrompt ni l’import ni l’apprentissage : il est
+déplacé dans un sous-dossier **Photos corrompues** à côté de l’original (avec son
+XMP éventuel), retiré du reportage ou du groupe de références, et signalé à la fin
+de la tâche. Ce sous-dossier n’est jamais relu lors d’un import. Un boîtier simplement
+non reconnu reste à sa place et apparaît dans **Erreurs de lecture**.
 La prise en charge des boîtiers dépend de LibRaw. Les exports JPEG/PNG sont en
 8 bits sRGB et les aperçus RAW peuvent différer légèrement du développement final.
 Une image pleine résolution doit tenir en mémoire à l’export.
