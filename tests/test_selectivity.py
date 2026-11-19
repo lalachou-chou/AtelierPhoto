@@ -66,8 +66,9 @@ def test_selection_changes_existing_batch_and_requires_revalidation(store, tmp_p
 def test_manual_choices_and_retouched_photos_survive_repeated_selection(store):
     batch = cached_batch(store)
     rows = store.photos(batch)
-    # An older manual correction and a new explicit confirmation of a proposal.
+    # A manual correction and an explicit confirmation of a proposal.
     rows[0]["data"]["decision"] = "reject" if rows[0]["data"]["proposed"] == "keep" else "keep"
+    rows[0]["data"]["manual_decision"] = True
     rows[1]["data"]["manual_decision"] = True
     rows[2]["data"]["recipe"]["exposure"] = .3
     store.save_photos(rows)

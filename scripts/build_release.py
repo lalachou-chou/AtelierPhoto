@@ -41,7 +41,7 @@ def collect_notices(bundle):
         raise RuntimeError("Licence Python introuvable dans cette installation. "
                            "Réinstallez Python depuis python.org ou Homebrew.")
     shutil.copy2(python_license, target / "Python-LICENSE.txt")
-    for name in ("numpy", "pillow", "PySide6", "PySide6_Essentials", "PySide6_Addons", "shiboken6", "rawpy", "onnxruntime", "protobuf", "flatbuffers"):
+    for name in ("numpy", "pillow", "tifffile", "PySide6", "PySide6_Essentials", "PySide6_Addons", "shiboken6", "rawpy", "onnxruntime", "protobuf", "flatbuffers"):
         distribution = importlib.metadata.distribution(name)
         for file in distribution.files or []:
             if any(t in str(file).lower() for t in ("license", "copying", "copyright", "notice")):

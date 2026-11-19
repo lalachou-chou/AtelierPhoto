@@ -13,9 +13,8 @@ def ensure_onnx_dylib_alias():
     """
     if sys.platform != "darwin":
         return None
-    import onnxruntime
-
-    capi = Path(onnxruntime.__file__).resolve().parent / "capi"
+    from importlib.metadata import distribution
+    capi = Path(distribution("onnxruntime").locate_file("onnxruntime/capi"))
     target = capi / "libonnxruntime.1.30.0.dylib"
     alias = capi / "libonnxruntime.1.dylib"
     if not target.is_file():

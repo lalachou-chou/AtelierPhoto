@@ -51,7 +51,7 @@ def prepare(root=ROOT):
         subprocess.run([str(python), "-m", "pip", "install", "--force-reinstall", "--only-binary=:all:",
                         "-r", str(requirements)], cwd=root, check=True)
         subprocess.run([str(python), "-c",
-                        "import numpy, PIL, rawpy, onnxruntime; "
+                        "import numpy, PIL, rawpy; from atelier.local_runtime import load_runtime; load_runtime(); "
                         "from PySide6 import QtCore, QtGui, QtWidgets"], cwd=root, check=True)
         marker.write_text(expected + "\n", encoding="utf-8")
     # Launch never downloads the model: verify the copy included in the archive.

@@ -9,7 +9,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-KINDS = {"analysis": "Analyse d’un lot", "selection": "Sélectivité du lot", "training": "Apprentissage", "export": "Export", "references": "Références"}
+KINDS = {"analysis": "Analyse d’un lot", "selection": "Sélectivité du lot", "training": "Apprentissage",
+         "export": "Export", "recovery": "Récupération de photos"}
 STATES = {"pending": "En attente", "paused": "En pause", "failed": "Interrompue", "running": "En cours"}
 
 

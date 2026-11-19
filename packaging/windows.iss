@@ -2,7 +2,7 @@
 ; Pass /DAppVersion=x.y.z and /DBundleDir="absolute path to AtelierPhoto.dist" to ISCC
 ; ("Construire Atelier Photo (Windows).cmd" does it).
 #ifndef AppVersion
-  #define AppVersion "0.4.0"
+  #define AppVersion "0.8.0"
 #endif
 #ifndef BundleDir
   #define BundleDir "..\dist\" + AppVersion + "\AtelierPhoto.dist"

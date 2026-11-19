@@ -64,7 +64,7 @@ automatiquement le Python d’un `.venv` déjà créé.
 À la fin, le résultat est dans `dist` :
 
 ```text
-AtelierPhoto-0.4.0-macOS-arm64.dmg
+AtelierPhoto-0.8.0-macOS-arm64.dmg
 ```
 
 Transférez uniquement ce DMG au Mac final. Le Mac final n'a besoin ni de Python,

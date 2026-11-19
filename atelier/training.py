@@ -15,6 +15,8 @@ import numpy as np
 
 from . import look as looks
 from . import selection
+from .framing import FULL_FRAME, register_pair
+from .imaging import as_image, color_features
 
 VISUAL_MATCH = .90
 MATCH_MARGIN = .02
@@ -73,7 +75,7 @@ def learn(rows, load_sample, encoder_version):
     reportages = {}
     for row in rows:
         reportages.setdefault(row["reportage"], {"rush": [], "kept": []})[row["role"]].append(row)
-    samples, sources, targets = [], [], []
+    samples, sources, targets, examples = [], [], [], []
     summary = {"reportages": 0, "photos": 0, "kept": 0, "pairs": 0}
     for reportage in reportages.values():
         rush, kept = reportage["rush"], reportage["kept"]
@@ -96,20 +98,36 @@ def learn(rows, load_sample, encoder_version):
         samples.append([{"stats": r["data"]["stats"], "embedding": r["data"]["embedding"], "time": r["data"].get("time"),
                          "name": r["data"]["name"], "kept": i in chosen} for i, r in enumerate(rush)])
         for k, i in pairs.items():
-            # Crops and rotations change the framing: such pairs only teach the selection.
-            if abs(rush[i]["data"]["stats"]["aspect"] - kept[k]["data"]["stats"]["aspect"]) > .02:
-                continue
             source, target = load_sample(rush[i]), load_sample(kept[k])
-            if source is not None and target is not None and source.shape == target.shape:
-                sources.append(source.astype(np.float32))
-                targets.append(target.astype(np.float32))
+            if source is None or target is None:
+                continue
+            target = target.astype(np.float32)
+            aligned, crop = register_pair(source.astype(np.float32), target)
+            original = rush[i]["data"]
+            example = {"embedding": original["embedding"], "aspect": original["stats"]["aspect"],
+                       "features": kept[k]["data"]["stats"]}
+            if aligned is not None:
+                example["crop"] = crop
+                # Measure grading on the common area, so removing a bright sky
+                # is not mistaken for an exposure adjustment.
+                example["before"] = color_features(as_image(aligned))
+                example["after"] = color_features(as_image(target))
+                sources.append(aligned)
+                targets.append(target)
+            examples.append(example)
         summary["reportages"] += 1
         summary["photos"] += len(rush)
         summary["kept"] += len(chosen)
     if not samples:
         raise ValueError("Aucun reportage exploitable : il faut le rush complet et les photos retenues correspondantes.")
     model = dict(summary)
-    model["selector"] = selection.train(samples, encoder_version, source="profil")
+    try:
+        model["selector"] = selection.train(samples, encoder_version, source="profil")
+    except ValueError as exc:
+        warnings.append(str(exc))
+        model["selector"] = None
+    model.update(examples=examples, encoder=encoder_version,
+                 crops=sum(e.get("crop", FULL_FRAME) != FULL_FRAME for e in examples))
     try:
         model["look"] = looks.fit(sources, targets)
         model["pairs"] = model["look"]["pairs"]

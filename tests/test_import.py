@@ -6,11 +6,12 @@ import pytest
 from PIL import Image
 from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
 from atelier.app import Window
 from atelier.pipeline import analysis_job, run_job
 from atelier.store import uid
+from atelier.workspace_ui import PrepareImport
 
 
 def send_drop(target, urls):
@@ -35,6 +36,12 @@ def test_local_folder_drop_starts_an_import(qapp, store, tmp_path, monkeypatch, 
     Image.new("RGB", (12, 12)).save(source)
     launched = []
     monkeypatch.setattr(Window, "launch", lambda self, identifier: launched.append(identifier))
+    def configure(dialog):
+        dialog.slider.setValue(73)
+        dialog.choose("drop")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(PrepareImport, "exec", configure)
     window = Window(store.root)
     try:
         window.show()
@@ -44,6 +51,7 @@ def test_local_folder_drop_starts_an_import(qapp, store, tmp_path, monkeypatch, 
         assert all(event.isAccepted() for event in events)
         assert events[-1].dropAction() == Qt.DropAction.CopyAction
         assert len(launched) == 1
+        assert store.job(launched[0])["payload"]["selectivity"] == .73
         assert store.job(launched[0])["payload"]["paths"] == [str(source.resolve())]
         assert source.exists()
         assert not send_drop(widget, [QUrl("https://example.com/photo.jpg")])[0].isAccepted()

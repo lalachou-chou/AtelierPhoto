@@ -1,16 +1,23 @@
 """Corrupt RAW files are set aside without blocking imports or profile training."""
+import io
 import queue
+import struct
 import threading
 from pathlib import Path
 
 import numpy as np
 import pytest
 from PIL import Image
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QDialog, QFileDialog
 
-from atelier import pipeline
+from atelier import imaging, pipeline
+from atelier.app import Window, quarantine_message
 from atelier.config import QUARANTINE_DIR, discover
+from atelier.cr2 import broken_raw_strip, embedded_jpeg
 from atelier.imaging import CorruptPhoto
-from atelier.pipeline import analysis_job, reference_job, run_job, training_update_job
+from atelier.pipeline import analysis_job, run_job, training_update_job
+from atelier.recovery_dialog import RecoveryDialog
 
 
 class Encoder:
@@ -128,8 +135,151 @@ def test_reference_corrupt_raw_is_set_aside(store, tmp_path, corrupt_cr2):
     good, bad = tmp_path / "good.png", tmp_path / "bad.CR2"
     Image.new("RGB", (32, 32), "orange").save(good)
     bad.write_bytes(b"damaged")
-    job = execute(store, reference_job(store, profile, [str(bad), str(good)]))
+    job = execute(store, training_update_job(store, profile, [], [{"name": "Exemples", "paths": [str(bad), str(good)]}]))
     assert job["state"] == "done" and not job["payload"]["errors"]
     assert len(store.references(profile)) == 1
     assert (tmp_path / QUARANTINE_DIR / "bad.CR2").exists()
+
+
+def cr2_with_bad_raw_offset(path):
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 48), "orange").save(buffer, "JPEG")
+    jpeg = buffer.getvalue()
+
+    def directory(offset, length):
+        return (struct.pack("<H", 3) + struct.pack("<HHII", 259, 3, 1, 6)
+                + struct.pack("<HHII", 273, 4, 1, offset)
+                + struct.pack("<HHII", 279, 4, 1, length) + bytes(4))
+
+    header = b"II*\x00" + struct.pack("<I", 16) + b"CR\x02\x00" + struct.pack("<I", 58)
+    path.write_bytes(header + directory(100, len(jpeg)) + directory(100 + len(jpeg), 4) + jpeg + b"xxxx")
+    return jpeg
+
+
+def test_retry_joint_rush_and_references_recovers_camera_jpeg(store, tmp_path, monkeypatch):
+    profile = store.create_profile("Test")
+    record = reportage(tmp_path / "A", corrupt=())
+    bad = tmp_path / "A" / "rush" / "bad.CR2"
+    jpeg = cr2_with_bad_raw_offset(bad)
+    record["rush"].append(str(bad))
+    group = {"name": "Exemples", "paths": [str(bad), record["kept"][0]]}
+    identifier = training_update_job(store, profile, [record], [group])
+    # Reproduce a task saved by the previous decoder at the final cursor.
+    with monkeypatch.context() as patch:
+        patch.setattr(imaging, "broken_raw_strip", lambda path: False)
+        failed = execute(store, identifier)
+        assert failed["state"] == "failed" and failed["cursor"] == len(failed["payload"]["items"])
+    job = execute(store, identifier)
+    assert job["state"] == "done", job["error"]
+    assert store.model(profile)["photos"] == 8
+    assert len(store.references(profile)) == 1
+    assert str(bad) not in store.reportages(profile)[0]["rush"]
+    assert str(bad) not in store.reference_groups(profile)[0]["paths"]
+    [entry] = job["payload"]["quarantined"]
+    assert "Récupérer les photos corrompues" in quarantine_message([entry])
+    assert list(Path(entry["to"]).parent.iterdir()) == [Path(entry["to"])]
+    [pending] = store.quarantined(profile)
+    assert pending["path"] == entry["to"] and pending["output"] is None
+    identifier = pipeline.recovery_job(store, profile, [entry["to"]], tmp_path)
+    done = execute(store, identifier)
+    assert done["state"] == "done" and not done["payload"]["errors"]
+    recovered = Path(store.quarantined(profile)[0]["output"])
+    assert recovered.read_bytes() == jpeg and recovered.parent == tmp_path
+    assert pipeline.recover_one(entry["to"], tmp_path) == str(recovered)
+
+
+def test_cr2_with_unusable_preview_or_no_evidence_of_raw_damage(tmp_path):
+    path = tmp_path / "sample.CR2"
+    jpeg = cr2_with_bad_raw_offset(path)
+    data = path.read_bytes()
+    path.write_bytes(data.replace(jpeg, b"x" * len(jpeg)))
+    assert broken_raw_strip(path) and embedded_jpeg(path) is None
+    path.write_bytes(data[:-4] + b"\xff\xd8\xff\xd9")
+    assert not broken_raw_strip(path)
+    with pytest.raises(ValueError, match="boîtier non reconnu") as failure:
+        imaging.decode(path)
+    assert not isinstance(failure.value, CorruptPhoto)
+
+
+def test_recovery_button_is_opt_in_and_survives_deleted_batch(qapp, store, tmp_path, monkeypatch):
+    profile = store.create_profile("Import")
+    good, broken, other = [tmp_path / name for name in ("good.CR2", "broken.CR2", "other.CR2")]
+    jpeg = cr2_with_bad_raw_offset(good)
+    cr2_with_bad_raw_offset(other)
+    broken.write_bytes(good.read_bytes().replace(jpeg, bytes(len(jpeg))))
+    job = execute(store, analysis_job(store, profile, [str(path) for path in (good, broken, other)]))
+    store.delete_batch(job["batch"], profile)
+    destination = tmp_path / "Copies"
+    destination.mkdir()
+    existing = destination / "good-recuperee.jpg"
+    existing.write_bytes(b"existing")
+    window = Window(store.root)
+    launched = []
+    monkeypatch.setattr(window, "launch", launched.append)
+    try:
+        def select(dialog):
+            assert not dialog.paths() and not dialog.recover.isEnabled()
+            for i in range(dialog.list.count()):
+                item = dialog.list.item(i)
+                if Path(item.data(Qt.ItemDataRole.UserRole)).name != other.name:
+                    item.setCheckState(Qt.CheckState.Checked)
+            assert dialog.recover.isEnabled()
+            return QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr(RecoveryDialog, "exec", lambda dialog: QDialog.DialogCode.Rejected)
+        window.recovery_button.click()
+        assert not launched
+        monkeypatch.setattr(RecoveryDialog, "exec", select)
+        monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args: "")
+        window.recovery_button.click()
+        assert not launched
+        monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args: str(destination))
+        window.recovery_button.click()
+        identifier, = launched
+        result = execute(store, identifier)
+        assert result["state"] == "done"
+        assert [e["file"] for e in result["payload"]["errors"]] == [broken.name]
+        new_file, = result["payload"]["outputs"]
+        assert Path(new_file).read_bytes() == jpeg and existing.read_bytes() == b"existing"
+        entries = {Path(e["original"]).name: e for e in window.store.quarantined(profile)}
+        assert entries[good.name]["output"] == new_file
+        assert entries[broken.name]["error"] and not entries[other.name]["output"]
+        assert all(Path(e["path"]).exists() for e in entries.values())
+    finally:
+        window.close()
+
+
+
+
+def test_recognizable_truncated_jpeg_in_references_can_be_recovered(store, tmp_path):
+    profile = store.create_profile("JPEG")
+    photo = tmp_path / "ref.jpg"
+    Image.new("RGB", (80, 60), "orange").save(photo)
+    data = photo.read_bytes()
+    photo.write_bytes(data[:-2])
+    job = execute(store, training_update_job(store, profile, [], [{"name": "Photos", "paths": [str(photo)]}]))
+    assert job["state"] == "done" and not store.references(profile)
+    entry, = store.quarantined(profile)
+    assert entry["output"] is None
+    done = execute(store, pipeline.recovery_job(store, profile, [entry["path"]], tmp_path))
+    assert not done["payload"]["errors"]
+    assert Path(done["payload"]["outputs"][0]).read_bytes() == data
+
+
+def test_png_recovers_pixels_past_damaged_metadata(store, tmp_path):
+    profile = store.create_profile("PNG")
+    path = tmp_path / "photo.png"
+    original = Image.new("RGB", (36, 40), (24, 93, 190))
+    original.save(path)
+    png = path.read_bytes()
+    damaged_text = struct.pack(">I", 3) + b"tEXtA\x00B" + bytes(4)
+    path.write_bytes(png[:33] + damaged_text + png[33:])
+    job = execute(store, analysis_job(store, profile, [str(path)]))
+    assert job["state"] == "done"
+    entry, = store.quarantined(profile)
+    assert not entry["output"]
+    done = execute(store, pipeline.recovery_job(store, profile, [entry["path"]], tmp_path))
+    assert not done["payload"]["errors"]
+    with Image.open(done["payload"]["outputs"][0]) as recovered:
+        assert recovered.tobytes() == original.tobytes()
 

@@ -7,6 +7,40 @@ import time
 from pathlib import Path
 
 
+def windows_ort_telemetry_registered():
+    """Read the ML telemetry provider state for this process, without starting a trace."""
+    import ctypes
+    import struct
+    import uuid
+    from ctypes import wintypes
+
+    guid = uuid.UUID("3a26b1ff-7484-7484-7484-15261f42614d")
+    provider = (ctypes.c_ubyte * 16).from_buffer_copy(guid.bytes_le)
+    query = ctypes.WinDLL("advapi32").EnumerateTraceGuidsEx
+    query.argtypes = [ctypes.c_int, ctypes.c_void_p, wintypes.ULONG, ctypes.c_void_p,
+                      wintypes.ULONG, ctypes.POINTER(wintypes.ULONG)]
+    query.restype = wintypes.ULONG
+    size = wintypes.ULONG()
+    buffer = ctypes.create_string_buffer(4096)
+    while True:
+        result = query(1, ctypes.byref(provider), 16, buffer, len(buffer), ctypes.byref(size))
+        if result != 122:  # ERROR_INSUFFICIENT_BUFFER
+            break
+        buffer = ctypes.create_string_buffer(size.value)
+    if result == 4200:  # ERROR_WMI_GUID_NOT_FOUND: no registered instance
+        return False
+    if result:
+        raise ctypes.WinError(result)
+    count, _ = struct.unpack_from("<II", buffer)
+    offset = 8
+    for _ in range(count):
+        next_offset, _, pid, _flags = struct.unpack_from("<IIII", buffer, offset)
+        if pid == os.getpid():
+            return True
+        offset += next_offset
+    return False
+
+
 def self_test(report_path):
     import numpy as np
     from PIL import Image
@@ -80,7 +114,7 @@ def self_test(report_path):
     rows = store.photos(batch)
     assert len(rows) == 3 and all("error" not in r["data"] for r in rows)
     for row in rows:
-        row["data"]["decision"] = "keep"
+        row["data"].update(decision="keep", manual_decision=True)
     rows[0]["data"]["recipe"]["exposure"] += .2
     store.save_photos(rows)
     validation = store.validate(batch, profile)
@@ -113,5 +147,14 @@ def self_test(report_path):
               "originals_unchanged": True, "spawn_workers": True, "qt_preview": True,
               "batch_deleted": True, "learning_preserved": True,
               "training_reportages": learned["reportages"], "training_pairs": learned["pairs"]}
+    if os.name == "nt":
+        from .dino import DinoEncoder
+
+        encoder = DinoEncoder()
+        with Image.open(paths[0]) as image:
+            encoder.encode(image)
+        if windows_ort_telemetry_registered():
+            raise RuntimeError("Le moteur DINOv3 s’est inscrit à la télémétrie Windows.")
+        report["onnx_telemetry_provider_registered"] = False
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report

@@ -27,11 +27,22 @@ code à exécuter ou à compiler ; ce ne sont pas les installateurs de l’appli
 
 ## Apprendre avec ses reportages et ses références
 
-Au premier lancement, créer un profil. On peut importer directement un lot avec
-la sélection et le filtre par défaut, ou personnaliser le profil avant de commencer.
+Au premier lancement, un guide en cinq étapes présente le parcours :
+**Profil → Reportages et références → Importer → Vérifier et retoucher → Exporter**.
+Ses cartes reliées par des flèches expliquent les actions à effectuer, les boutons
+à utiliser et le résultat attendu. On peut revenir à une étape ou le rouvrir depuis **Aide**.
 
-Pour le personnaliser, cliquer sur **Apprendre de reportages triés**, puis sur
-**Ajouter un reportage : rush + photos retenues**. Choisir le dossier du rush
+Le **profil actif** reste visible dans la colonne **Profil et lots**, avec son bilan
+d’apprentissage et un accès direct à **Reportages et références…**.
+**Gérer les profils…** permet de créer, choisir et personnaliser ses profils.
+Le dernier profil actif est retrouvé au prochain lancement.
+Préparez ses exemples, cochez les groupes voulus et attendez la fin de l’apprentissage.
+**Importer…** ouvre ensuite la préparation du lot : vérifiez le profil et la sélectivité,
+puis choisissez les fichiers ou le dossier. Sans profil existant, **Mon premier profil**
+est créé au premier import confirmé, avec les réglages fournis.
+
+Pour le personnaliser, cliquer sur **Reportages et références…**, puis sur
+**Ajouter un reportage…**. Choisir le dossier du rush
 complet, puis le dossier des photos retenues, retouchées ou non. Les sous-dossiers
 sont inclus dans les deux cas. Répéter pour
 ajouter autant de reportages que souhaité. Les reportages enregistrés dans ce
@@ -57,9 +68,12 @@ distinct. Si le dossier des retenues est à l’intérieur du rush, il est exclu
 rush pour éviter de compter les retouches comme des originaux supplémentaires.
 
 - **Sélection** : au moins 6 originaux, dont 2 retenus et un écarté au total.
-- **Filtre couleur** : au moins 5 paires original / retouche couleur de même
-  cadrage. Les recadrages et versions noir et blanc n’enseignent que la sélection.
-  Si le filtre ne peut pas être appris, le filtre par défaut reste utilisé.
+- **Rendu et cadrage.** Dès une paire associée, la retouche fournit un exemple de rendu.
+  Atelier cherche la zone commune dans le rush et la retouche. Il mémorise les bords
+  du cadre lorsque la correspondance est suffisamment précise. Cinq paires couleur
+  correctement alignées permettent d’apprendre le filtre couleur complet. Le noir et blanc
+  peut guider la saturation sur des images similaires. Pour intégrer ces changements aux
+  reportages déjà appris, relancer leur apprentissage à partir des échantillons conservés.
 
 Attendre le bilan avant d’importer un nouveau lot. **Suspendre**, puis **Gérer les
 tâches → Reprendre** permettent de continuer sans doublonner les exemples. Un reportage
@@ -89,10 +103,30 @@ ceux fournis pour l’apprentissage.
 
 Une **référence est une photo exemple sans son rush associé**.
 
-Ouvrir **Apprendre de reportages triés**, puis cliquer sur **Ajouter des références**,
+Ouvrir **Reportages et références…**, puis cliquer sur **Ajouter des références**,
 à côté du bouton **Ajouter un reportage**. Sélectionner les photos dont le sujet
-et le rendu plaisent, idéalement les versions finales retouchées. Les formats RAW,
-JPEG et PNG sont acceptés.
+et le rendu plaisent, idéalement les versions finales retouchées. Trois cas sont acceptés :
+
+| Référence | Ce qu’elle apprend au profil |
+| --- | --- |
+| **JPEG ou PNG** | Ressemblance, rendu final et format du cadre |
+| **RAW + XMP** (Lightroom, Camera Raw ou Atelier) | Ressemblance, rendu et cadre. Le XMP voisin (`photo.xmp` ou `photo.nef.xmp`) est lu et appliqué au RAW. |
+| **RAW seul** | Ressemblance et format du cadre. Le RAW non développé ne montre pas votre rendu, il n’influence donc pas les retouches. |
+
+Il suffit de sélectionner les RAW : le XMP voisin est retrouvé automatiquement, et le
+sélectionner aussi est sans effet. La ligne du groupe indique combien de photos relèvent de chaque cas.
+
+Le XMP est reproduit de façon approchée par le moteur d’Atelier :
+
+- **Repris :** exposition, contraste, saturation et vibrance, noir et blanc, et balance des blancs
+  (relative à celle du boîtier). Hautes lumières, ombres, blancs et noirs sont repris par une
+  courbe approchée. Le recadrage est aussi appliqué.
+- **Repris aussi :** clarté, courbe paramétrique et courbes par points (y compris par canal), et TSL.
+- **Ignorés :** texture, correction du voile, teinte (tint) et retouches locales.
+- **darktable :** l’historique d’un XMP darktable n’est pas lisible. La photo compte alors
+  comme un RAW seul, sauf pour un XMP écrit par Atelier.
+- **XMP modifié :** si le XMP change après l’ajout, retirez puis ajoutez de nouveau le groupe
+  pour que la nouvelle retouche soit prise en compte.
 
 Chaque ajout apparaît comme **un groupe dans la liste**, avec son nom et son
 nombre de photos. Cocher le groupe pour l’utiliser ; le décocher pour le garder
@@ -111,6 +145,9 @@ Le profil mémorise leur contenu et leur rendu pour personnaliser les prochains 
 - **Retouches** : les références les plus proches guident l’exposition, la
   température, le contraste et la saturation. Si un filtre par défaut ou appris
   est présent, ces ajustements complètent son rendu.
+- **Recadrages.** Une référence seule indique un rapport largeur/hauteur final. Pour une
+  photo proche et de même orientation, Atelier peut proposer ce format centré. Les paires
+  rush/retouche et les recadrages manuels validés fournissent aussi la position du cadre.
 
 Sans rush ni paires original / retouche, ces exemples ne montrent pas les photos
 à écarter ni les étapes exactes d’une retouche. Ils personnalisent les préférences
@@ -125,23 +162,28 @@ traitement. Si une nouvelle référence est illisible, les réglages précédent
 restent actifs : corriger le fichier puis relancer depuis la liste, ou retirer
 le groupe concerné.
 
+Le menu **Charge** en bas de la fenêtre règle la part de l’ordinateur utilisée
+par les importations et apprentissages : **Rapide** (presque tout le
+processeur, en laissant la priorité aux autres applications), **Équilibrée**
+(environ la moitié) ou **Discrète** (une photo à la fois, en arrière-plan). Le
+choix est mémorisé et peut être changé pendant un traitement ; il ne modifie
+jamais les résultats. Sur un ordinateur modeste (4 cœurs ou moins, moins de
+8 Go de mémoire), le parallélisme est réduit automatiquement et la charge
+**Équilibrée** est proposée par défaut.
+
 Les groupes restent mémorisés après fermeture. Recocher un groupe déjà analysé
 réutilise les données enregistrées, même si ses photos ont ensuite été déplacées.
-Les références ajoutées avec une ancienne version sont réunies automatiquement
-dans le groupe **Références déjà ajoutées**, lui aussi décochable.
 
 Une photo identique présente dans plusieurs groupes ne compte qu’une fois parmi
 les références actives. **Effacer les corrections apprises** conserve les groupes.
 
 ## Trier, retoucher et exporter
 
-1. Importer des fichiers, un dossier ou les glisser sur la zone
-   **Déposez un dossier ou des photos ici**, au-dessus de la galerie.
+1. Ouvrir **Importer** ou déposer les fichiers dans la galerie. La préparation
+   du nouveau lot permet de choisir son profil et sa sélectivité.
    Les sous-dossiers sont inclus. La sélectivité garde davantage de photos à gauche,
-   moins à droite. Survoler le titre **Sélectivité** ou son curseur affiche les
-   explications ; un double-clic sur le curseur le remet au centre.
-   Elle s’applique aux prochains imports et recalcule aussi le tri
-   du lot affiché au relâchement du curseur, sans relire les photos. Les choix
+   moins à droite. Pour recalculer un lot déjà importé, ouvrir **Options du lot**
+   et ajuster son curseur. Le recalcul utilise les données déjà analysées. Les choix
    manuels et les retouches sont conservés ; valider à nouveau après le recalcul.
    Chaque lot retrouve son réglage lorsqu’on le sélectionne. Terminer ou supprimer
    une tâche d’export suspendue avant de modifier son tri. Avec le profil fourni,
@@ -161,20 +203,56 @@ les références actives. **Effacer les corrections apprises** conserve les grou
    apparaissent **en attente de tri**, sans gonfler le compteur des retenues.
    Reprendre l’import via **Gérer les tâches** pour terminer le lot.
 2. Examiner **Retenues**, **À vérifier**, **Écartées** et **Erreurs de lecture**.
-   **Voir les variantes** ou un double-clic ouvre la scène ; **Tout afficher**
-   revient à la galerie. Les touches 1, 2 et 3 changent la décision.
+   **Groupes de variantes** permet d’ouvrir une scène du lot. **Isoler ses variantes**
+   ouvre celle de la photo affichée. **Garder uniquement celle-ci** retient cette photo et
+   écarte les autres du groupe. **Revenir au lot** affiche toutes les photos du lot.
+   Cliquer sur l’aperçu ou double-cliquer sur une vignette ouvre la photo en grand.
+   Les flèches parcourent la sélection affichée, **Zoom ×2** agrandit l’aperçu
+   et **Échap** ferme la vue. Les touches 1, 2 et 3 changent la décision dans l’atelier.
 3. Comparer l’original et la retouche. Ctrl/Cmd + clic sélectionne plusieurs
    photos ; les curseurs s’appliquent à toute la sélection. **Rétablir** remet la
    recette initiale ; un double-clic sur un curseur rétablit ce seul réglage.
-   Le bouton de filtre coupe ou réapplique le filtre sur tout le lot, export compris.
-4. **Valider le lot**, puis exporter les retenues en JPEG qualité 95, PNG ou
-   **RAW + XMP**. Les photos à vérifier ne sont pas exportées. Les RAW sont copiés
-   à l’identique ; les JPEG/PNG d’un export RAW + XMP deviennent des JPEG retouchés.
+   Dans **Retoucher**, **Partir de zéro** neutralise la proposition pour appliquer ses propres
+   réglages. **Retirer la retouche sur tout le lot**, dans **Options du lot**, permet de repartir
+   de réglages neutres et de travailler sur la sélection avec **Retoucher** dans la vue agrandie.
+   Les deux modes mémorisent leurs réglages séparément. **Réappliquer la retouche sur tout le lot**
+   retrouve les réglages précédents.
+   **Recadrer** permet de tracer et déplacer un cadre sur la photo affichée avec une grille, les tiers,
+   le nombre d’or ou la spirale d’or. **Appliquer** mémorise le cadre. Rouvrir l’outil permet d’annuler
+   les cadrages successifs ou de retrouver le cadre d’origine. Le cadrage s’applique au JPEG et au PNG,
+   même lorsque le filtre couleur est désactivé. **Retirer le recadrage** affiche et exporte la
+   photo entière. **Réappliquer le recadrage** retrouve son cadre. **Retirer les recadrages du lot**
+   suspend tous les cadres, y compris sur les photos masquées. Le bouton individuel permet de faire
+   une exception. Réappliquer les recadrages du lot respecte les cadres retirés individuellement.
+   Pour un RAW, **RAW + XMP** inscrit le cadre actif dans le XMP.
+   **Clarté, courbe et TSL** (repliable sous les curseurs) ajoute la clarté, une courbe des tons
+   à quatre plages (ombres, tons sombres, tons clairs, hautes lumières) et la TSL par couleur
+   (teinte, saturation, luminance des rouges, oranges, jaunes, verts, turquoises, bleus, violets
+   et magentas). Ces réglages sont rendus à l’export, écrits dans le XMP d’un RAW, et appris par le
+   profil à la validation du lot.
+4. **Exporter** permet de valider le lot et d’enregistrer les retenues en JPEG, PNG ou
+   **RAW + XMP si nécessaire**. En JPEG, **Maximale** copie les JPEG intacts et encode les rendus
+   en qualité 100. **Selon le JPEG source** reprend pour les retouches les tables de compression et
+   l’échantillonnage du JPEG RVB source si disponibles, sinon la qualité 100. **Personnalisée**
+   réencode au niveau choisi de 1 à 100. L’export conserve les dimensions du cadrage. Le PNG conserve exactement
+   les pixels du rendu. Les photos à vérifier ne sont pas exportées. Pour **RAW + XMP**, les RAW sont
+   copiés à l’identique et les fichiers JPEG et PNG suivent les règles de l’export JPEG.
+   **Copie à l’identique** conserve les octets des sources, y compris ceux d’un JPEG
+   déjà retouché, et copie les fichiers annexes de type `photo.xmp` ou `photo.ext.xmp`.
    Aucun fichier existant n’est écrasé.
+   **Remplacer les originaux au lieu de créer des copies** sert à libérer de la place sur un disque
+   plein. Après confirmation, chaque original retenu est remplacé dans son propre dossier par sa
+   version retouchée : même nom si le format ne change pas, sinon nouveau fichier puis suppression
+   de l’original. La suppression est définitive, sans corbeille. La version retouchée est
+   entièrement écrite sur le disque avant la suppression de l’original. Un RAW exporté en
+   **RAW + XMP** n’est jamais modifié : seul son XMP voisin est écrit ou remplacé. Un fichier
+   voisin portant déjà le nom visé n’est jamais écrasé. Ce lot ne peut plus être exporté ensuite.
 5. **Mettre l’export en pause** termine la photo en cours. **Reprendre l’export**
    continue dans le même dossier et au même format, y compris après fermeture.
    Une coupure exactement pendant la publication d’un fichier peut produire une
    copie supplémentaire à la reprise.
+6. Dans **Options du lot**, **Supprimer ce lot…** retire le lot sélectionné et ses aperçus après
+   confirmation. Les photos d’origine, les exports et les corrections déjà apprises sont conservés.
 
 Un lot doit être entièrement analysé avant validation. Supprimer un lot retire
 ses aperçus et tâches, mais conserve les originaux, exports et corrections déjà
@@ -219,16 +297,38 @@ composants, raccourcis et entrée de désinstallation.
 DINOv3 Small analyse le contenu en 448 × 448 sur CPU. Le tri combine ce contenu,
 la netteté, l’exposition et le contexte de la scène. Il n’y a pas de détecteur de
 visage : le regard, le sourire ou les yeux fermés demandent une vérification.
-Les retouches sont globales, sans masque, recadrage ou génération de détails.
+Les réglages couleur sont globaux. Le curseur de température indique la balance du rendu en kelvins,
+avec 6 500 K comme point neutre sur l’image développée. Il conserve la compatibilité des anciens réglages.
+Les réglages manuels et les recadrages corrigés sont mémorisés à la validation, y compris depuis l’export.
 
-Le filtre appris n’est pas transposé dans le XMP : seuls les réglages globaux
-compatibles y figurent, sans conversion de température en Kelvin pour les RAW.
-Un RAW corrompu ou tronqué n’interrompt ni l’import ni l’apprentissage : il est
+Le modèle livré exécute des opérations ONNX standard et lit ses poids dans
+`model.onnx_data`, à côté du graphe. L’analyse et l’apprentissage du profil
+s’effectuent sur l’ordinateur. Hugging Face sert à préparer les fichiers du
+modèle avant leur distribution. Atelier désactive la télémétrie d’ONNX Runtime
+avant son initialisation. Sous Windows, l’autodiagnostic vérifie que le processus
+qui exécute DINOv3 ne s’inscrit pas au fournisseur de télémétrie de Microsoft.
+
+Lors d’un export RAW, un cadrage, une correction globale, un outil avancé (clarté, courbe, TSL)
+ou une retouche par consigne produit un XMP. Un RAW sans ces réglages est copié seul. Les retouches par
+consigne y deviennent des masques Lightroom (voir `docs/RETOUCHE_PAR_CONSIGNE.md`). Le XMP conserve la balance « telle que prise » du RAW et enregistre
+la température du rendu dans le champ Atelier. Le filtre couleur appris s’applique aux rendus JPEG et PNG.
+Une photo reconnue comme endommagée est écartée pendant l’import d’un lot,
+l’apprentissage sur un rush ou l’ajout de références. Le fichier est
 déplacé dans un sous-dossier **Photos corrompues** à côté de l’original (avec son
 XMP éventuel), retiré du reportage ou du groupe de références, et signalé à la fin
-de la tâche. Ce sous-dossier n’est jamais relu lors d’un import. Un boîtier simplement
+de la tâche. Ce sous-dossier est ignoré lors du parcours du dossier parent.
+
+Dans le profil concerné, cliquez sur **Récupérer les photos corrompues**,
+cochez les fichiers et choisissez le dossier où enregistrer les copies. Pour
+les RAW, le logiciel tente d’extraire l’aperçu du boîtier. Sa résolution dépend
+du fichier. Il peut aussi récupérer certains JPEG tronqués ou PNG dont les
+métadonnées sont endommagées. Vérifiez visuellement chaque copie, puis
+importez-la comme photo ou comme référence si vous souhaitez l’utiliser.
+Le résultat de chaque tentative reste disponible depuis le même bouton.
+
+Un boîtier simplement
 non reconnu reste à sa place et apparaît dans **Erreurs de lecture**.
-La prise en charge des boîtiers dépend de LibRaw. Les exports JPEG/PNG sont en
+La prise en charge des boîtiers dépend de LibRaw. Les nouveaux rendus JPEG/PNG sont en
 8 bits sRGB et les aperçus RAW peuvent différer légèrement du développement final.
 Une image pleine résolution doit tenir en mémoire à l’export.
 
@@ -341,17 +441,18 @@ boîtiers et les systèmes réellement utilisés restent nécessaires.
 - `atelier/app.py`, `training_dialog.py`, `task_dialog.py` : interface Qt.
 - `atelier/pipeline.py` : tâches d’analyse, d’apprentissage, de tri et d’export,
   avec suspension et reprise ; processus séparé pour les aperçus.
-- `atelier/store.py` : base SQLite, profils, lots, corrections et migrations.
+- `atelier/store.py` : base SQLite, profils, lots et corrections.
 - `atelier/analysis.py`, `selection.py` : propositions par photo et tri par scène.
 - `atelier/training.py`, `look.py` : correspondances rush / retenues et
   apprentissage de la sélection et du rendu couleur.
 - `atelier/imaging.py`, `dino.py`, `xmp.py` : lecture, rendu, encodage et export XMP.
+- `atelier/tools.py` : clarté, courbe des tons et TSL ; `atelier/lightroom.py` : retouches locales écrites en masques Lightroom.
 - `scripts/` : préparation, évaluation, compilation et distribution ;
   `tests/` : tests automatisés ; `packaging/` : ressources des installateurs.
 
-Les anciens lots gardent une copie du profil utilisé à leur création. Les
-migrations SQLite et les lecteurs d’anciennes tâches servent à préserver ce
-travail ; ils ne sont pas du code inutilisé.
+Chaque lot garde une copie du profil utilisé à sa création. Les bibliothèques
+créées par une autre version du schéma SQLite ne sont pas migrées : l’application
+refuse de les ouvrir.
 
 ## Construire et distribuer
 
@@ -361,7 +462,7 @@ travail ; ils ne sont pas du code inutilisé.
   l’installateur Inno Setup. Le script utilise le Python de `.venv` (3.12, 3.13
   ou 3.14) et télécharge le compilateur nécessaire à la première construction.
   Les tests utilisent un dossier temporaire dans `test-output/`. L’exécutable
-  est vérifié avant de créer `dist/AtelierPhoto-0.4.0-Windows-x64-Setup.exe`.
+  est vérifié avant de créer `dist/AtelierPhoto-0.8.0-Windows-x64-Setup.exe`.
 - **Mac depuis Windows** : suivre le
   [guide GitHub Actions](docs/COMPILER_MAC_DEPUIS_WINDOWS.md).
 - **Mac de construction** : suivre

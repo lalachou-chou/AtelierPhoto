@@ -1,7 +1,7 @@
 import pytest
 from PySide6.QtWidgets import QDialog, QMessageBox
 
-from atelier.store import uid
+from atelier.store import SCHEMA_VERSION, Store, uid
 from atelier.task_dialog import TaskDialog
 
 
@@ -106,13 +106,13 @@ def test_window_task_deletion_confirmation_and_labels(qapp, store, monkeypatch, 
     monkeypatch.setattr(TaskDialog, "exec", choose_delete)
     monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.StandardButton.Yes if confirmed else QMessageBox.StandardButton.No)
     try:
-        assert window.before_button.text() == "Afficher l’original (sans retouche)"
+        assert window.before_button.text() == "Voir l’original"
         window.before_button.setChecked(True)
         window.request_preview()
-        assert window.before_button.text() == "Afficher la retouche"
+        assert window.before_button.text() == "Voir la retouche"
         window.before_button.setChecked(False)
         window.request_preview()
-        assert window.before_button.text() == "Afficher l’original (sans retouche)"
+        assert window.before_button.text() == "Voir l’original"
         assert window.filter_button.text() == "Retirer la retouche sur tout le lot"
         window.filter_button.click()
         assert window.filter_button.text() == "Réappliquer la retouche sur tout le lot"
@@ -122,3 +122,10 @@ def test_window_task_deletion_confirmation_and_labels(qapp, store, monkeypatch, 
         assert store.batch(batch)["name"] == "Lot"
     finally:
         window.close()
+
+
+def test_library_from_another_schema_is_refused(store):
+    with store.db:
+        store.db.execute(f"PRAGMA user_version={SCHEMA_VERSION - 1}")
+    with pytest.raises(RuntimeError, match="autre version"):
+        Store(store.root)

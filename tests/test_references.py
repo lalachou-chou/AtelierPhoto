@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QDialog, QFileDialog, QTextBrowser
 from atelier.analysis import LEARNED_NEUTRAL, finalize, propose
 from atelier.app import Window
 from atelier.imaging import color_features, features, render
-from atelier.pipeline import reference_job, run_job, training_update_job
+from atelier.pipeline import run_job, training_update_job
 from atelier.selection import FEATURE_VERSION, TECH_KEYS
 from atelier.store import Store
 from atelier.training_dialog import TrainingDialog
@@ -34,7 +34,6 @@ def execute(store, identifier, cancel=None):
 def test_reference_import_resume_duplicates_and_frozen_batches(store, tmp_path):
     profile = store.create_profile("Références")
     other = store.create_profile("Autre")
-    store.set_model(profile, {"previous": True})
     before = store.snapshot(profile, Encoder.version)
     batch = store.create_batch(profile, "Avant ajout", before, .5)
     paths = []
@@ -50,16 +49,17 @@ def test_reference_import_resume_duplicates_and_frozen_batches(store, tmp_path):
             self.calls += 1
             return self.calls > 1
 
-    identifier = reference_job(store, profile, paths)
+    identifier = training_update_job(store, profile, [], [{"name": "Exemples", "paths": paths}])
     assert execute(store, identifier, PauseAfterFirst())["state"] == "paused"
     assert store.job(identifier)["cursor"] == 1
     assert len(store.references(profile)) == 1
     assert execute(store, identifier)["state"] == "done"
-    assert execute(store, reference_job(store, profile, paths))["state"] == "done"
+    groups = store.reference_groups(profile)
+    assert execute(store, training_update_job(store, profile, [], groups))["state"] == "done"
+    # The third file duplicates the first one: two distinct references.
     assert len(store.references(profile)) == 2
     assert len(store.snapshot(profile, Encoder.version)["references"]) == 2
     assert store.batch(batch)["snapshot"] == before
-    assert store.model(profile) == {"previous": True}
     assert not store.references(other)
     store.clear_feedback(profile)
     reopened = Store(store.root)
@@ -69,15 +69,6 @@ def test_reference_import_resume_duplicates_and_frozen_batches(store, tmp_path):
         reopened.close()
 
 
-def test_bad_reference_is_reported_and_good_reference_is_kept(store, tmp_path):
-    profile = store.create_profile("Photos lisibles")
-    bad, good = tmp_path / "bad.jpg", tmp_path / "good.png"
-    bad.write_text("not an image", encoding="utf-8")
-    Image.new("RGB", (32, 32), "orange").save(good)
-    job = execute(store, reference_job(store, profile, [str(bad), str(good)]))
-    assert job["state"] == "done"
-    assert [error["file"] for error in job["payload"]["errors"]] == [bad.name]
-    assert len(store.references(profile)) == 1
 
 
 @pytest.mark.parametrize("source", ["profil par défaut", "profil"])
@@ -181,12 +172,14 @@ def test_reference_button_creates_job_and_help_explains_unpaired_photos(qapp, st
         assert len(launched) == 1
 
         def inspect_help(dialog):
-            text = dialog.findChild(QTextBrowser).toPlainText()
+            advanced = dialog.findChild(QTextBrowser, "advancedHelp")
+            text = advanced.toPlainText()
             assert "sans leur rush associé" in text
             assert "Ajouter des références" in text
             assert "Les lots déjà importés gardent leurs propositions" in text
             assert "poids DINOv3" not in text
-            assert dialog.findChild(QTextBrowser).document().blockCount() > 20
+            assert "Copie à l’identique" in text and "JPEG" in text and "XMP" in text
+            assert advanced.document().blockCount() > 20
             return QDialog.DialogCode.Rejected
 
         monkeypatch.setattr(QDialog, "exec", inspect_help)
@@ -272,30 +265,6 @@ def test_reference_group_failure_does_not_publish_checkbox_changes(store, tmp_pa
     assert not store.reference_groups(profile)[1]["enabled"]
 
 
-def test_migration_preserves_old_references_as_a_toggleable_group(store, tmp_path):
-    profile = store.create_profile("Anciennes références")
-    group = reference_group(tmp_path, "Ancien")
-    assert execute(store, reference_job(store, profile, group["paths"]))["state"] == "done"
-    before = store.snapshot(profile, Encoder.version)
-    with store.db:
-        store.db.execute("DROP TABLE reference_members")
-        store.db.execute("DROP TABLE reference_groups")
-        store.db.execute("PRAGMA user_version=5")
-    migrated = Store(store.root)
-    try:
-        groups = migrated.reference_groups(profile)
-        assert len(groups) == 1 and groups[0]["count"] == 1
-        assert groups[0]["enabled"] and groups[0]["ready"]
-        assert migrated.snapshot(profile, Encoder.version) == before
-        groups[0]["enabled"] = False
-        assert execute(migrated, training_update_job(migrated, profile, [], groups))["state"] == "done"
-        assert not migrated.snapshot(profile, Encoder.version)["references"]
-        groups = migrated.reference_groups(profile)
-        groups[0]["enabled"] = True
-        assert execute(migrated, training_update_job(migrated, profile, [], groups))["state"] == "done"
-        assert migrated.snapshot(profile, Encoder.version)["references"] == before["references"]
-    finally:
-        migrated.close()
 
 
 def test_dialog_reference_group_is_one_checkbox_and_cancel_keeps_original(qapp, tmp_path, monkeypatch):

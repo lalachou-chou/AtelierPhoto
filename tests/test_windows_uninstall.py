@@ -60,6 +60,9 @@ def test_install_upgrade_uninstall_removes_profiles_and_components(tmp_path, mon
     assert app_dir.resolve().is_relative_to(tmp_path.resolve())
     assert data_dir.resolve().is_relative_to(tmp_path.resolve())
     script = (root / "packaging/windows.iss").read_text(encoding="utf-8")
+    # Inno resolves the icon relative to the copied script in the temporary folder.
+    icon = root / "atelier" / "assets" / "app-icon.ico"
+    script = script.replace(r"SetupIconFile=..\atelier\assets\app-icon.ico", f"SetupIconFile={icon}")
     assert f"AppMutex={windows_lifecycle.APP_MUTEX}" in script
     script = script.replace("AppId={{03D9A7F4-FC1B-4563-9C14-05D456760E50}", "AppId=AtelierPhotoTest" + token)
     script = script.replace("AppName=Atelier Photo", "AppName=Atelier Photo Test " + token)

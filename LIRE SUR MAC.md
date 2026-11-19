@@ -11,7 +11,7 @@ L'archive `Mac-sources.zip` contient du code à compiler : ce n'est pas l'instal
 
 ## Installation par clics
 
-1. Double-cliquez sur `AtelierPhoto-0.4.0-macOS-arm64.dmg`.
+1. Double-cliquez sur le fichier `AtelierPhoto-<version>-macOS-arm64.dmg` téléchargé.
 2. Dans la fenêtre ouverte, glissez **AtelierPhoto.app** sur **Applications**.
    Attendez la fin de la copie. Fermez une éventuelle version déjà ouverte.
 3. Éjectez le disque « Atelier Photo » depuis Finder.
@@ -33,7 +33,7 @@ cette autorisation. [Procédure Apple](https://support.apple.com/fr-fr/102445).
 
 ## Utilisation
 
-Créez un profil, utilisez **Apprendre de reportages triés** pour ajouter vos rushs
+Créez un profil, utilisez **Reportages et références…** pour ajouter vos rushs
 et leurs photos choisies, puis importez un nouveau lot. Vérifiez
 les décisions et retouches avant validation et export. Les originaux restent intacts.
 Les profils et lots Windows ne sont pas inclus dans le programme.

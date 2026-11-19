@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 
 from atelier.pipeline import run_job, training_job, training_jobs, training_update_job
-from atelier.store import Store, uid
+from atelier.store import uid
 from atelier.training import learn, match
 
 
@@ -159,15 +159,6 @@ def test_invalid_inputs_create_no_jobs(store, tmp_path):
     assert store.unfinished_jobs(profile) == []
 
 
-def test_legacy_training_job_can_resume(store, tmp_path):
-    profile = store.create_profile("Ancienne version")
-    record = reportage(tmp_path, "A")
-    payload = {"reportage": uid(), "name": "A", "errors": [], "warnings": [],
-               "items": [{"path": p, "role": role} for role in ("rush", "kept") for p in record[role]]}
-    identifier = store.new_job(profile, "training", payload)
-    execute(store, identifier, PauseAfter(3))
-    assert execute(store, identifier)["state"] == "done"
-    assert store.model(profile)["photos"] == 6
 
 
 def test_read_failure_preserves_profile_and_is_resumable(store, tmp_path):
@@ -331,22 +322,6 @@ def test_remove_paused_reportage_prevents_resume_from_restoring_it(store, tmp_pa
     assert store.model(profile)["photos"] == 12
 
 
-def test_catalog_migrates_existing_v4_training_and_pending_jobs(store, tmp_path):
-    profile = store.create_profile("Migration")
-    good = training_job(store, profile, **reportage(tmp_path, "A"))
-    assert execute(store, good)["state"] == "done"
-    pending = training_job(store, profile, **reportage(tmp_path, "B", 1))
-    assert execute(store, pending, PauseAfter(2))["state"] == "paused"
-    expected = store.reportages(profile)
-    with store.db:
-        store.db.execute("DELETE FROM reportages")
-        store.db.execute("PRAGMA user_version=4")
-    migrated = Store(store.root)
-    try:
-        assert migrated.reportages(profile) == expected
-        assert migrated.db.execute("PRAGMA user_version").fetchone()[0] == 6
-    finally:
-        migrated.close()
 
 
 def test_management_rejects_foreign_ids_and_duplicate_rushs(store, tmp_path):
@@ -359,7 +334,7 @@ def test_management_rejects_foreign_ids_and_duplicate_rushs(store, tmp_path):
             training_update_job(store, target, catalog)
 
 
-def test_removing_reportage_with_too_small_remainder_clears_old_model(store, tmp_path):
+def test_removing_reportage_with_small_remainder_keeps_only_its_style_examples(store, tmp_path):
     profile = store.create_profile("Petit reste")
     first, second = reportage(tmp_path, "A"), reportage(tmp_path, "B", 1)
     second["rush"], second["kept"] = second["rush"][:3], second["kept"][:2]
@@ -369,7 +344,9 @@ def test_removing_reportage_with_too_small_remainder_clears_old_model(store, tmp
     job = execute(store, training_update_job(store, profile, remaining))
     assert job["state"] == "done", job["error"]
     assert job["payload"]["warnings"]
-    assert store.model(profile) is None
+    remaining_model = store.model(profile)
+    assert remaining_model["selector"] is None and remaining_model["look"] is None
+    assert remaining_model["photos"] == 3 and len(remaining_model["examples"]) == 2
     assert len(store.reportages(profile)) == 1
 
 
@@ -393,7 +370,7 @@ def test_changing_training_reportages_preserves_validated_user_corrections(store
     assert execute(store, training_update_job(store, profile, [reportage(tmp_path, "A")]))["state"] == "done"
     batch = store.create_batch(profile, "Corrigé", store.snapshot(profile, Encoder.version), .5)
     store.save_photo(uid(), batch, tmp_path / "photo.jpg", {
-        "embedding": [1., 0., 0.], "proposed": "keep", "decision": "reject",
+        "embedding": [1., 0., 0.], "proposed": "keep", "decision": "reject", "manual_decision": True,
         "initial_recipe": dict(NEUTRAL), "base_recipe": dict(NEUTRAL),
         "recipe": dict(NEUTRAL, exposure=.25),
     })

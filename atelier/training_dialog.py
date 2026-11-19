@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -16,7 +17,21 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from .config import PHOTO_FILTER, discover
+from .config import PHOTO_FILTER, RAW_EXTENSIONS, discover
+from .xmp import find_sidecar
+
+
+def reference_kinds(paths):
+    """'2 RAW + XMP · 1 RAW seul · 3 JPEG/PNG' for a reference group."""
+    counts = {"RAW + XMP": 0, "RAW seul (ressemblance et cadrage)": 0, "JPEG/PNG": 0}
+    for path in paths:
+        if Path(path).suffix.lower() not in RAW_EXTENSIONS:
+            counts["JPEG/PNG"] += 1
+        elif find_sidecar(path):
+            counts["RAW + XMP"] += 1
+        else:
+            counts["RAW seul (ressemblance et cadrage)"] += 1
+    return " · ".join(f"{n} {label}" for label, n in counts.items() if n)
 
 
 def reportage_files(rush_directory, kept_paths):
@@ -40,25 +55,54 @@ class TrainingDialog(QDialog):
         self.initial = {("reportage", r["id"]): bool(r["enabled"]) for r in reportages}
         self.initial.update({("references", g["id"]): bool(g["enabled"]) for g in reference_groups})
         self.setWindowTitle("Reportages et références du profil")
-        self.resize(880, 560)
+        self.resize(880, 640)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+        title = QLabel("Les exemples qui façonnent votre profil")
+        title.setObjectName("heading")
+        title.setWordWrap(True)
+        layout.addWidget(title)
         explanation = QLabel(
-            "Reportage : le rush complet et les photos retenues, retouchées ou non.\n"
-            "Références : des photos exemples sans leur rush associé, réunies en un groupe par ajout.\n\n"
-            "Cochez les lignes à utiliser. Décochez un groupe pour le garder sans l’utiliser.\n"
-            "Les changements prennent effet après application ; Annuler conserve vos réglages actuels.")
+            "Ajoutez l’un ou l’autre type d’exemples, ou combinez les deux. "
+            "Ils seront utilisés pour les prochains lots importés avec ce profil.")
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
-        self.add = QPushButton("Ajouter un reportage : rush + photos retenues")
+        self.add = QPushButton("Ajouter un reportage…")
         self.add.setToolTip("Choisissez le dossier du rush complet, puis celui des photos retenues ; les sous-dossiers sont inclus.")
         self.add.clicked.connect(self.add_reportage)
         additions = QHBoxLayout()
-        additions.addWidget(self.add)
         self.add_references = QPushButton("Ajouter des références")
         self.add_references.setToolTip("Sélectionnez des photos exemples sans leur rush associé ; elles formeront un groupe cochable.")
         self.add_references.clicked.connect(self.add_reference_group)
-        additions.addWidget(self.add_references)
+        for caption, text, control in (
+            ("Reportages déjà triés", "Le rush complet + vos photos retenues, retouchées ou non. "
+             "Atelier apprend vos choix et les retouches associées. Pour apprendre le tri : "
+             "au moins 6 originaux, dont 2 retenus et 1 écarté. Plus vous ajoutez de reportages complets, "
+             "plus le tri est fidèle.", self.add),
+            ("Photos de référence", "Des photos exemples sans leur rush associé : JPEG, RAW, ou RAW + XMP "
+             "(retouche Lightroom / Camera Raw lue à côté du fichier). Elles guident le classement "
+             "par ressemblance, le rendu et le cadrage. Un RAW sans XMP ne guide pas le rendu.", self.add_references),
+        ):
+            card = QFrame()
+            card.setObjectName("guideCard")
+            content = QVBoxLayout(card)
+            content.setContentsMargins(14, 14, 14, 14)
+            heading = QLabel(caption)
+            heading.setObjectName("cardTitle")
+            heading.setWordWrap(True)
+            content.addWidget(heading)
+            description = QLabel(text)
+            description.setWordWrap(True)
+            content.addWidget(description)
+            content.addStretch()
+            content.addWidget(control)
+            additions.addWidget(card, 1)
         layout.addLayout(additions)
+        instruction = QLabel("Ajouter des exemples  →  Cocher les groupes à utiliser  →  Appliquer l’apprentissage")
+        instruction.setObjectName("eyebrow")
+        instruction.setWordWrap(True)
+        layout.addWidget(instruction)
         self.list = QListWidget()
         self.list.setWordWrap(True)
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -68,7 +112,15 @@ class TrainingDialog(QDialog):
         self.remove.clicked.connect(self.remove_selected)
         self.list.itemSelectionChanged.connect(self.update_summary)
         self.list.itemChanged.connect(self.update_summary)
-        layout.addWidget(self.remove)
+        removal = QHBoxLayout()
+        removal.addWidget(self.remove)
+        removal.addStretch()
+        layout.addLayout(removal)
+        hint = QLabel("Décochez un groupe pour le garder sans l’utiliser. Annuler conserve les réglages actuels. "
+                      "Après application, attendez le bilan de l’apprentissage avant d’importer.")
+        hint.setWordWrap(True)
+        hint.setObjectName("muted")
+        layout.addWidget(hint)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
@@ -76,6 +128,7 @@ class TrainingDialog(QDialog):
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Annuler")
         buttons.rejected.connect(self.reject)
         self.start = buttons.addButton("Lancer l’apprentissage", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.start.setObjectName("primary")
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
         for record in reportages:
@@ -99,7 +152,8 @@ class TrainingDialog(QDialog):
         if not chosen:
             return
         try:
-            paths = discover(chosen)
+            # Sidecars are found next to their photo; selecting them alongside is harmless.
+            paths = discover([c for c in chosen if Path(c).suffix.lower() != ".xmp"])
             if not paths:
                 raise ValueError("Aucune photo compatible trouvée.")
             if any(set(g["paths"]) == set(paths) for g in self.reference_groups()):
@@ -135,8 +189,10 @@ class TrainingDialog(QDialog):
         if record.get("kind") == "references":
             count = record["count"] if record.get("ready") else len(record["paths"])
             text = f"Références · {record['name']} · {count} photos · {state}\nPhotos exemples sans rush associé"
+            if not record.get("ready") and record.get("paths"):
+                text += " · " + reference_kinds(record["paths"])
         else:
-            rush = str(Path(record["rush"][0]).parent)
+            rush = str(Path(record["rush"][0]).parent) if record["rush"] else "aucune photo lisible"
             text = (f"Reportage · {record['name']} · {len(record['rush'])} photos · {len(record['kept'])} retenues · {state}\n"
                     f"Rush : {rush}")
         item = QListWidgetItem(text)
