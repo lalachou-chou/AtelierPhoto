@@ -15,17 +15,19 @@ def test_docs_copy_matches_the_in_app_reference():
 
 def test_reference_covers_every_part_of_the_application():
     for title in ("Principes et garanties", "Architecture et processus", "Formats et décodage",
-                  "Analyse d'une photo", "Tri par scène", "Apprentissage du profil", "Rendu",
-                  "clarté, courbe, TSL", "Retouches par consigne", "Recadrage", "Export", "XMP",
-                  "pause et reprise", "récupération", "confidentialité", "Autodiagnostic", "Limites connues"):
+                  "Analyse d'une photo", "Tri par scène", "Apprentissage du profil", "Références",
+                  "corrections validées", "Export", "pause et reprise", "récupération", "confidentialité",
+                  "Autodiagnostic", "Limites connues"):
         assert title in REFERENCE, title
+    for removed in ("Retouches par consigne", "Recadrage", "clarté, courbe, TSL", "MaskGroupBasedCorrections"):
+        assert removed not in REFERENCE, removed
 
 
 def test_advanced_help_tab_includes_the_reference(qapp, monkeypatch):
     def inspect(dialog):
         text = dialog.findChild(QTextBrowser, "advancedHelp").toPlainText()
         assert "Fonctionnement détaillé" in text
-        assert "pooler_output" in text and "MaskGroupBasedCorrections" in text
+        assert "pooler_output" in text and "groupe de variantes" in text
         assert "| --- |" not in text and "| Table |" not in text  # tables rendered, not raw Markdown
         return QDialog.DialogCode.Rejected
 

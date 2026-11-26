@@ -33,10 +33,10 @@ def corrupt_cr2(monkeypatch):
     """Files named *.CR2 decode as a damaged RAW; others decode normally."""
     real = pipeline.decode
 
-    def decode(path, preview=False):
+    def decode(path):
         if Path(path).suffix.lower() == ".cr2":
             raise CorruptPhoto("RAW corrompu ou incomplet : Data error or unsupported file format")
-        return real(path, preview)
+        return real(path)
 
     monkeypatch.setattr(pipeline, "decode", decode)
 
@@ -283,3 +283,17 @@ def test_png_recovers_pixels_past_damaged_metadata(store, tmp_path):
     with Image.open(done["payload"]["outputs"][0]) as recovered:
         assert recovered.tobytes() == original.tobytes()
 
+
+
+def test_quarantine_moves_adobe_and_darktable_sidecars(tmp_path):
+    photo = tmp_path / "DSC0001.NEF"
+    photo.write_bytes(b"damaged")
+    (tmp_path / "DSC0001.xmp").write_text("<adobe/>", encoding="utf-8")
+    (tmp_path / "DSC0001.NEF.xmp").write_text("<darktable/>", encoding="utf-8")
+    (tmp_path / QUARANTINE_DIR).mkdir()
+    (tmp_path / QUARANTINE_DIR / "DSC0001.NEF").write_bytes(b"earlier")
+    target = Path(pipeline.quarantine(photo))
+    assert target == tmp_path / QUARANTINE_DIR / "DSC0001 (2).NEF"
+    assert (target.parent / "DSC0001 (2).xmp").read_text(encoding="utf-8") == "<adobe/>"
+    assert (target.parent / "DSC0001 (2).NEF.xmp").read_text(encoding="utf-8") == "<darktable/>"
+    assert list(tmp_path.iterdir()) == [tmp_path / QUARANTINE_DIR]

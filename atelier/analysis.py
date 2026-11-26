@@ -1,11 +1,5 @@
-import copy
-
 import numpy as np
 
-from .framing import FULL_FRAME, ratio_crop
-from .imaging import NEUTRAL, clamp_recipe, color_features, render
-from .local import suggest
-from .look import knots_for
 from .selection import (
     chronological,
     compatible,
@@ -17,6 +11,8 @@ from .selection import (
 )
 
 _MATRICES = []
+# Similarity above which a reference is considered to show the same kind of picture.
+CLOSE_REFERENCE = .82
 
 
 def _matrix(entries):
@@ -41,9 +37,6 @@ def similar(embedding, entries, limit=8):
     return [(entries[int(i)], float(scores[i])) for i in top]
 
 
-LEARNED_NEUTRAL = dict(NEUTRAL, intensity=1.)
-
-
 def technical(stats, selectivity, kept_before):
     """Hard technical verdict. Only blank frames and whole-frame blur are rejected."""
     peak = stats["peak"]
@@ -58,20 +51,14 @@ def technical(stats, selectivity, kept_before):
     return "keep", []
 
 
-def rendering_target(entry, stats):
-    if "before" not in entry:
-        return entry["features"]
-    before, after = entry["before"], entry["after"]
-    target = {key: float(np.clip((stats[key] + .05) * (after[key] + .05) / (before[key] + .05) - .05, 0, 1))
-              for key in ("luma", "spread", "saturation")}
-    if entry["features"]["saturation"] < .015:
-        target["saturation"] = 0.
-    target["rgb"] = np.clip(np.array(stats["rgb"]) + np.array(after["rgb"]) - before["rgb"], 0, 1)
-    return target
+def propose(stats, embedding, snapshot, selectivity=.5):
+    """Per-photo proposal. The final selection is made per scene by ``finalize``.
 
-
-def propose(stats, embedding, snapshot, selectivity=.5, small=None):
-    """Per-photo proposal. The final selection is made per scene by ``finalize``."""
+    References (photos the user likes, without their rush) weigh in twice:
+    their resemblance raises the photo's score in ``finalize`` (best variant of
+    a scene included), and without a learned selector a photo far from every
+    reference is sent to review rather than kept automatically.
+    """
     nearest = similar(embedding, snapshot["references"])
     similarity = float(np.mean([s for _, s in nearest[:3]])) if nearest else 0.
     feedback = [(e, s) for e, s in similar(embedding, snapshot["feedback"]) if s > .82]
@@ -95,94 +82,12 @@ def propose(stats, embedding, snapshot, selectivity=.5, small=None):
     if status == "keep" and any(e["decision"] in ("reject", "review") for e, _ in feedback):
         status = "review"
         reasons.append("Une correction passée invite à vérifier cette photo")
-    look = snapshot.get("look")
-    style = {"exposure": 0., "temperature": 0., "contrast": 0., "saturation": 0.}
-    if look and small is not None:
-        style["knots"] = knots_for(look, small)
-    paired = similar(embedding, snapshot.get("examples", []))
-    # When the LUT could not be fitted (e.g. a single pair), the delivered
-    # image still supplies a local rendering target.
-    # A fitted personal look already renders colour; only monochrome examples still add a target.
-    personal = snapshot.get("personal_look")
-    # A RAW reference without sidecar shows no delivered look: resemblance only.
-    targets = [n for n in nearest if n[0].get("render", True)] + [p for p in paired if p[1] >= .82 and (not personal or p[0]["features"]["saturation"] < .015)]
-    targets.sort(key=lambda hit: hit[1], reverse=True)
-    target = [rendering_target(entry, stats) for entry, score in targets[:3] if score >= targets[0][1] - .08]
-    if target:
-        # Correct the remaining difference after the learned look, so the two
-        # sources of learning complement each other instead of doubling the look.
-        rendered = color_features(render(small, LEARNED_NEUTRAL, style, look)) if "knots" in style else stats
-        def median(k):
-            return float(np.median([t[k] for t in target]))
-        style["exposure"] = float(np.clip(np.log2((median("luma") + .05) / (rendered["luma"] + .05)), -.65, .65))
-        rgb = np.median([t["rgb"] for t in target], axis=0)
-        style["temperature"] = float(np.clip(((rgb[0] - rgb[2]) - (rendered["rgb"][0] - rendered["rgb"][2])) * 1.5, -.35, .35))
-        style["contrast"] = float(np.clip((median("spread") - rendered["spread"]) / max(.15, rendered["spread"]), -.45, .45))
-        saturation = median("saturation")
-        style["saturation"] = (-1. if saturation < .015 and rendered["saturation"] >= .015 else
-                               float(np.clip((saturation - rendered["saturation"]) / max(.15, rendered["saturation"]), -.6, .6)))
-    base = LEARNED_NEUTRAL if "knots" in style or target else NEUTRAL
-    recipe = dict(base)
-    # Search the relevant corrections separately. Selection-only decisions
-    # should not displace edits in the nearest neighbours.
-    edits = similar(embedding, snapshot.get("edit_feedback", snapshot["feedback"]))
-    for key in recipe:
-        corrections = [(f["manual_settings"][key] if "manual_settings" in f else base[key] + f["delta"][key], s)
-                       for f, s in edits if s > .82 and ("manual_settings" in f or key in f["delta"])]
-        if corrections:
-            recipe[key] = float(np.average([v for v, _ in corrections], weights=[s ** 6 for _, s in corrections]))
-    recipe = clamp_recipe(recipe)
-    local_edits = learned_local_edits(embedding, snapshot)
-    tools = learned_tools(embedding, snapshot)
-    aspect = stats.get("aspect")
-    framing = {}
-    if aspect:
-        manual_crops = similar(embedding, snapshot.get("crop_feedback", []))
-        for matches in (manual_crops, paired):
-            close = [(e, s) for e, s in matches if "crop" in e and e.get("aspect") and s >= .82
-                     and abs(np.log(aspect / e["aspect"])) < .18]
-            if close:
-                best = close[0][1]
-                edges = np.median([e["crop"] for e, s in close if s >= best - .035], axis=0).tolist()
-                framing = {"crop": None if edges == FULL_FRAME else edges}
-                break
-        if not framing:
-            ratios = [e["features"]["aspect"] for e, s in nearest if s >= .82 and e["features"].get("aspect")
-                      and (abs(np.log(e["features"]["aspect"])) < .04 or (e["features"]["aspect"] >= 1) == (aspect >= 1))]
-            if ratios:
-                framing = {"crop": ratio_crop(aspect, float(np.median(ratios)))}
-        if framing:
-            framing["initial_crop"] = framing["crop"]
     votes = [1 if f["decision"] == "keep" else -1 for f, _ in feedback if f["decision"] in ("keep", "reject")]
     preference = float(np.mean(votes)) if votes else 0.
     if not reasons:
         reasons.append("Qualité technique satisfaisante")
     return {"proposed": status, "decision": status, "reasons": reasons, "similarity": similarity,
-            "preference": preference, "blocked": blocked, "style": style,
-            "base_recipe": dict(base), "initial_recipe": dict(recipe), "recipe": recipe,
-            "validated": False, "group": None, "local_edits": local_edits,
-            "initial_local_edits": [dict(e) for e in local_edits],
-            "tools": tools, "initial_tools": copy.deepcopy(tools), **framing}
-
-
-def learned_tools(embedding, snapshot):
-    """Clarity, curve and HSL validated on similar photos (weighted mean), or {}."""
-    from .tools import mean
-    neighbours = [(f["tools"], s ** 6) for f, s in similar(embedding, snapshot.get("tools_feedback", [])) if s > .82]
-    return mean(neighbours) or {}
-
-
-def learned_local_edits(embedding, snapshot):
-    """Zone edits validated on similar photos, proposed again; masks are recomputed per photo."""
-    from .prompt import describe
-    from .store import uid
-    neighbours = [(f, s) for f, s in similar(embedding, snapshot.get("local_feedback", [])) if s > .82]
-    proposals = []
-    for edit in suggest(neighbours):
-        edit.update(id=uid(), prompt="Appris de vos photos validées", strength=1., enabled=True, proposed=True)
-        edit["label"] = describe(edit) + " (appris)"
-        proposals.append(edit)
-    return proposals
+            "preference": preference, "blocked": blocked, "validated": False, "group": None}
 
 
 def _plural(n, word):
@@ -190,7 +95,7 @@ def _plural(n, word):
 
 
 def reselect(rows, snapshot, selectivity, cancel=None):
-    """Recalculate from cached analysis, preserving explicit decisions and all edits."""
+    """Recalculate from cached analysis, preserving explicit decisions."""
     manual = {}
     for row in rows:
         if cancel is not None and cancel.is_set():
@@ -294,7 +199,10 @@ def finalize(rows, snapshot, selectivity=.5):
         if source and i not in duplicates:
             d["reasons"].append(f"Modèle de sélection : {source}")
         if snapshot["references"] and i not in blocked and i not in duplicates:
-            d["reasons"].append("Vos références contribuent au classement par ressemblance")
+            if d.get("similarity", 0.) >= CLOSE_REFERENCE:
+                d["reasons"].append(f"Proche de vos références (ressemblance {round(100 * d['similarity'])} %)")
+            else:
+                d["reasons"].append("Vos références contribuent au classement par ressemblance")
         d["proposed"] = d["decision"] = status
         d.pop("selection_pending", None)
     return rows

@@ -103,7 +103,7 @@ def test_partial_import_obeys_quotas_and_resume_matches_uninterrupted_import(sto
     profile = store.create_profile("Quotas")
     paths = [str(tmp_path / f"{i:04}.jpg") for i in range(700)]
     stats = {"luma": .5, "spread": .2, "saturation": .2, "sharpness": .01,
-             "peak": .02, "noise": .001, "black": 0., "white": 0., "rgb": [.5] * 3}
+             "peak": .02, "noise": .001, "black": 0., "white": 0.}
 
     def prepare(path, *args):
         i = paths.index(path)
@@ -134,5 +134,5 @@ def test_partial_import_obeys_quotas_and_resume_matches_uninterrupted_import(sto
     assert fresh["state"] == "done", fresh["error"]
     uninterrupted = store.photos(fresh["batch"])
     for a, b in zip(resumed, uninterrupted, strict=True):
-        for key in ("decision", "proposed", "reasons", "score", "recipe", "style"):
+        for key in ("decision", "proposed", "reasons", "score", "group"):
             assert a["data"][key] == b["data"][key]

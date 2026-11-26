@@ -43,10 +43,6 @@ def stylesheet(name):
     QFrame#guideCard {{ background: {surface}; border: 1px solid {line}; border-radius: 10px; }}
     QLabel#guideTip {{ background: {selected}; padding: 14px; border-radius: 8px; }}
     QWidget#welcome {{ background: {paper}; border-radius: 8px; }}
-    QFrame#promptBox {{ background: {surface}; border: 1px solid {accent}; border-radius: 8px; }}
-    QLabel#promptTitle {{ font-family: Georgia; font-size: 18px; }}
-    QLabel#qualityWarning {{ background: {selected}; padding: 6px 8px; border-radius: 5px; }}
-    QLabel#settingValue {{ font-weight: 600; }}
     QLineEdit {{ padding: 5px 7px; }}
     QLabel#importNotice {{ background: {accent}; color: {on_accent}; padding: 10px 18px; border-radius: 6px; }}
     QPushButton, QComboBox, QToolButton, QTabBar::tab {{ background: {surface}; color: {ink};
@@ -146,9 +142,11 @@ class PreviewLabel(QLabel):
 
 
 class PhotoViewer(QDialog):
+    """Enlarged view to compare frames and decide; the decision keys stay active."""
     navigate = Signal(int)
+    decided = Signal(str)
 
-    def __init__(self, parent, editor):
+    def __init__(self, parent):
         super().__init__(parent)
         self.source = None
         self.area = QScrollArea()
@@ -159,19 +157,11 @@ class PhotoViewer(QDialog):
         self.photo.setObjectName("preview")
         self.area.setWidget(self.photo)
         layout = QVBoxLayout(self)
-        body = QHBoxLayout()
-        body.addWidget(self.area, 1)
-        # The editor grows with the advanced tools: it scrolls on small screens.
-        self.editor_scroll = QScrollArea()
-        self.editor_scroll.setWidgetResizable(True)
-        self.editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.editor_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        self.editor_scroll.setFixedWidth(330)
-        self.editor_scroll.setWidget(editor)
-        self.editor_scroll.hide()
-        body.addWidget(self.editor_scroll)
-        layout.addLayout(body, 1)
-        editor.show()
+        layout.addWidget(self.area, 1)
+        self.reasons = QLabel()
+        self.reasons.setObjectName("muted")
+        self.reasons.setWordWrap(True)
+        layout.addWidget(self.reasons)
         bar = QHBoxLayout()
         self.previous = QPushButton("← Précédente")
         self.next_photo = QPushButton("Suivante →")
@@ -179,35 +169,38 @@ class PhotoViewer(QDialog):
         self.next_photo.clicked.connect(lambda: self.navigate.emit(1))
         self.zoom = QCheckBox("Zoom ×2")
         self.zoom.toggled.connect(self.fit)
-        self.retouch = QPushButton("Retoucher")
-        self.retouch.setCheckable(True)
-        self.retouch.toggled.connect(self.editor_scroll.setVisible)
-        self.crop = QPushButton("Recadrer…")
-        self.toggle_crop = QPushButton()
+        self.decisions = []
+        for key, (title, status) in enumerate((("Retenir", "keep"), ("À vérifier", "review"), ("Écarter", "reject")), 1):
+            choice = QPushButton(f"{title} · {key}")
+            choice.setCheckable(True)
+            choice.clicked.connect(lambda checked=False, s=status: self.decided.emit(s))
+            self.decisions.append(choice)
         done = QPushButton("Fermer")
         done.clicked.connect(self.reject)
         self.counter = QLabel()
         for w in (self.previous, self.counter, self.next_photo):
             bar.addWidget(w)
         bar.addStretch()
+        for w in self.decisions:
+            bar.addWidget(w)
+        bar.addStretch()
         bar.addWidget(self.zoom)
         bar.addWidget(done)
-        editing = QHBoxLayout()
-        editing.addStretch()
-        for w in (self.retouch, self.crop, self.toggle_crop):
-            editing.addWidget(w)
-        layout.addLayout(editing)
         layout.addLayout(bar)
         self.area.viewport().installEventFilter(self)
 
-    def release_editor(self):
-        """Give the shared editor panel back before this viewer is deleted."""
-        return self.editor_scroll.takeWidget()
+    def show_decision(self, status, enabled):
+        for value, choice in zip(("keep", "review", "reject"), self.decisions, strict=True):
+            choice.setChecked(value == status)
+            choice.setEnabled(enabled)
 
     def keyPressEvent(self, event):
-        # Sliders handle arrow keys first. Elsewhere they navigate the gallery.
         if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
             self.navigate.emit(-1 if event.key() == Qt.Key.Key_Left else 1)
+            return
+        keys = {Qt.Key.Key_1: "keep", Qt.Key.Key_2: "review", Qt.Key.Key_3: "reject"}
+        if event.key() in keys and self.decisions[0].isEnabled():
+            self.decided.emit(keys[event.key()])
             return
         super().keyPressEvent(event)
 

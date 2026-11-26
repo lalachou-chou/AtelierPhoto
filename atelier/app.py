@@ -1,4 +1,3 @@
-import copy
 import multiprocessing as mp
 import queue
 import sqlite3
@@ -22,12 +21,10 @@ from PySide6.QtGui import QAction, QColor, QIcon, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
-    QFormLayout,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -42,9 +39,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QSlider,
-    QSpinBox,
     QSplitter,
     QStackedWidget,
     QToolButton,
@@ -57,45 +52,22 @@ from .config import (
     APP_NAME,
     PHOTO_FILTER,
     QUARANTINE_DIR,
-    RAW_EXTENSIONS,
     data_directory,
     discover,
     resource_directory,
 )
-from .crop_dialog import FULL, CropDialog
-from .imaging import (
-    IDENTITY_RECIPE,
-    LIMITS,
-    active_crop,
-    active_recipe,
-    crop_box,
-    source_size,
-    temperature_kelvin,
-    warmth_from_kelvin,
-)
-from .local import applied as applied_local_edits
 from .pipeline import (
     analysis_job,
     export_job,
-    preview_worker,
     recovery_job,
     run_job,
     selection_job,
     training_update_job,
 )
 from .progress import remaining_time_text
-from .prompt import parse as parse_prompt
 from .recovery_dialog import RecoveryDialog
 from .store import Store
 from .task_dialog import TaskDialog
-from .tools import COLOR_LABELS as TOOL_COLOR_LABELS
-from .tools import COLORS as TOOL_COLORS
-from .tools import CURVE as TOOL_CURVE
-from .tools import CURVE_LABELS as TOOL_CURVE_LABELS
-from .tools import active as active_tools
-from .tools import describe as describe_tools
-from .tools import difference as tools_difference
-from .tools import normalize as normalize_tools
 from .training_dialog import TrainingDialog
 from .workspace_ui import (
     PALETTES,
@@ -136,72 +108,12 @@ def label(text, name=None):
     return widget
 
 
-NBSP = "\u00a0"
-
-
-def pixels_text(size):
-    width, height = size
-    return f"{width:,}{NBSP}×{NBSP}{height:,}{NBSP}px".replace(",", NBSP)
-
-
-def prompt_quality_text(path, crop):
-    """What a zone edit does to the exported photo: definition kept, re-encoding only for JPEG."""
-    try:
-        size = source_size(path)
-    except Exception:  # noqa: BLE001 - informational only; the export reports real read errors.
-        return ("Définition conservée : une consigne ne réduit jamais la photo. "
-                "Dimensions inconnues tant que l’original est inaccessible."), False
-    output = size
-    if crop:
-        x, y, right, bottom = crop_box(size, crop)
-        output = (right - x, bottom - y)
-    megapixels = f"{output[0] * output[1] / 1e6:.1f}".replace(".", ",")
-    kept = f"Définition conservée : {pixels_text(output)} ({megapixels}{NBSP}Mpx), aucune réduction."
-    if output != size:
-        kept += f" Le recadrage réduit l’original de {pixels_text(size)}."
-    suffix = Path(path).suffix.lower()
-    if suffix in RAW_EXTENSIONS:
-        return (f"{kept} En RAW + XMP, le RAW reste intact : la retouche devient un masque Lightroom."), False
-    if suffix in (".jpg", ".jpeg"):
-        return (f"⚠ Perte possible : ce JPEG sera réencodé à l’export (qualité 100) au lieu d’être copié "
-                f"tel quel. La différence est très légère et invisible à l’œil ; exportez en PNG ou TIFF "
-                f"pour l’éviter. {kept}"), True
-    return f"Sans perte de qualité. {kept}", False
-
-
-class SettingLabel(QWidget):
-    """Setting name and its value; the value never wraps away from its unit."""
-
-    def __init__(self, title):
-        super().__init__()
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.title = label(title)
-        self.value = QLabel()
-        self.value.setObjectName("settingValue")
-        self.value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        layout.addWidget(self.title, 1)
-        layout.addWidget(self.value)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-
-    def set_value(self, value):
-        self.value.setText(value.replace(" ", NBSP))
-
-    def text(self):
-        return f"{self.title.text()}  {self.value.text().replace(NBSP, ' ')}".strip()
-
-
 def button(text, callback, primary=False):
     widget = QPushButton(text)
     widget.clicked.connect(callback)
     if primary:
         widget.setObjectName("primary")
     return widget
-
-
-def local_item_text(edit):
-    strength = round(edit.get("strength", 1.) * 100)
-    return edit["label"] + ("" if strength == 100 else f"  · {strength}\u00a0%")
 
 
 def selection_status(data):
@@ -214,7 +126,6 @@ class GalleryModel(QAbstractListModel):
         self.rows = []
         self.directory = None
         self.cache = OrderedDict()
-        self.crops_enabled = True
 
     def replace(self, rows, directory):
         self.beginResetModel()
@@ -239,10 +150,6 @@ class GalleryModel(QAbstractListModel):
             if identifier not in self.cache:
                 path = self.directory / f"{identifier}.jpg"
                 pixmap = QPixmap(str(path)) if path.exists() else QPixmap()
-                crop = active_crop(d, self.crops_enabled)
-                if not pixmap.isNull() and crop:
-                    x, y, right, bottom = crop_box((pixmap.width(), pixmap.height()), crop)
-                    pixmap = pixmap.copy(x, y, right - x, bottom - y)
                 self.cache[identifier] = QIcon(pixmap)
                 if len(self.cache) > 160:
                     self.cache.popitem(last=False)
@@ -252,9 +159,8 @@ class GalleryModel(QAbstractListModel):
             return QSize(172, 160)
 
 
-class ResettableSlider(QSlider):
-    """Double-click returns the setting to its initial value."""
-    reset = Signal()
+class SelectivitySlider(QSlider):
+    """Double-click returns to the balanced selectivity."""
 
     def __init__(self):
         super().__init__(Qt.Orientation.Horizontal)
@@ -262,7 +168,7 @@ class ResettableSlider(QSlider):
 
     def mouseDoubleClickEvent(self, event):
         if self.isEnabled():
-            self.reset.emit()
+            self.setValue(50)
         event.accept()
 
 
@@ -367,10 +273,6 @@ class Window(QMainWindow):
         self.context = mp.get_context("spawn")
         self.process = None
         self.active_job = None
-        self.preview_process = None
-        self.preview_in = self.context.Queue()
-        self.preview_out = self.context.Queue()
-        self.token = 0
         self.current_photo = None
         self.current_batch = None
         self.rows = []
@@ -379,7 +281,6 @@ class Window(QMainWindow):
         self.variants_origin = None
         self.variant_groups = {}
         self.resumable_export = None
-        self.batch_look = None
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(QIcon(str(resource_directory() / "app-icon.png")))
         self.resize(1330, 820)
@@ -393,9 +294,6 @@ class Window(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll)
         self.timer.start(100)
-        self.preview_timer = QTimer(self)
-        self.preview_timer.setSingleShot(True)
-        self.preview_timer.timeout.connect(self.request_preview)
         self.restore_panels()
 
     def build_ui(self):
@@ -430,9 +328,6 @@ class Window(QMainWindow):
         panel_button.setMenu(self.panel_menu)
         panel_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         toolbar.addWidget(panel_button)
-        self.filter_button = button("", self.toggle_filter)
-        self.filter_button.setCheckable(True)
-        self.batch_crop_button = button("", self.toggle_batch_crops)
         self.options_button = button("Options du lot", lambda: self.options_dialog.exec())
         toolbar.addWidget(self.options_button)
         outer.addLayout(toolbar)
@@ -514,7 +409,8 @@ class Window(QMainWindow):
         welcome_layout.addWidget(label("1  Choisissez ou créez votre profil à gauche.\n\n"
                                        "2  Ajoutez des reportages déjà triés ou des photos de référence, "
                                        "puis lancez l’apprentissage.\n\n"
-                                       "3  Cliquez sur Importer… pour trier un nouveau lot avec ce profil."))
+                                       "3  Cliquez sur Importer… : le rush est trié automatiquement, "
+                                       "variante par variante, dès la fin de l’analyse."))
         welcome_layout.addWidget(button("Configurer mon profil…", self.open_profiles, True))
         welcome_layout.addWidget(button("Voir le guide de démarrage", self.show_guide))
         welcome_layout.addStretch()
@@ -555,17 +451,6 @@ class Window(QMainWindow):
             action.triggered.connect(lambda checked=False, s=status: self.decide(s))
             self.addAction(action)
         photo_controls.addLayout(decisions)
-        tools = QHBoxLayout()
-        self.before_button = button("Voir l’original", self.request_preview)
-        self.before_button.setCheckable(True)
-        self.retouch_button = button("Retoucher…", self.open_editor)
-        self.crop_button = button("Recadrer…", self.open_crop)
-        tools.addWidget(self.before_button)
-        tools.addWidget(self.retouch_button)
-        tools.addWidget(self.crop_button)
-        photo_controls.addLayout(tools)
-        self.photo_crop_button = button("Retirer le recadrage", self.toggle_photo_crop)
-        photo_controls.addWidget(self.photo_crop_button)
 
         variants = QHBoxLayout()
         self.group_picker = QComboBox()
@@ -635,12 +520,8 @@ class Window(QMainWindow):
         self.mutators = [self.import_button, self.drop_zone, self.profiles, self.batches, self.new_button,
                          self.learn_button, self.rename_button, self.clear_feedback_button, self.delete_button,
                          self.selectivity, self.resume_button, self.recovery_button, self.validate_button,
-                         self.export_button, self.restore_button, self.neutral_button, self.retouch_button,
-                         self.delete_batch_button, self.prefer_button, self.crop_button,
-                         self.profile_learn_button, self.profile_picker, self.filter_button,
-                         self.photo_crop_button, self.batch_crop_button,
-                         *self.decision_buttons, *self.sliders.values(), *self.tool_sliders.values(),
-                         self.hsl_color, self.reset_tools_button]
+                         self.export_button, self.delete_batch_button, self.prefer_button,
+                         self.profile_learn_button, self.profile_picker, *self.decision_buttons]
 
     def tool_dialog(self, title):
         dialog = QDialog(self)
@@ -704,18 +585,17 @@ class Window(QMainWindow):
 
         self.options_dialog, layout = self.tool_dialog("Options du lot")
         layout.addWidget(label("Recalculer le tri du lot affiché"))
-        self.selectivity = ResettableSlider()
+        self.selectivity = SelectivitySlider()
         self.selectivity.setAccessibleName("Sélectivité du lot affiché")
         self.selectivity.setRange(0, 100)
         self.selectivity.setValue(50)
         self.selectivity.setTracking(False)
         self.selectivity.valueChanged.connect(self.change_selectivity)
-        self.selectivity.reset.connect(lambda: self.selectivity.setValue(50))
         layout.addWidget(self.selectivity)
         layout.addWidget(label("À gauche, garder davantage. À droite, garder moins.", "muted"))
-        self.filter_button.setChecked(True)
         self.validate_button = button("Valider le lot", self.validate_batch)
-        for b in (self.filter_button, self.batch_crop_button, self.validate_button, self.delete_batch_button):
+        self.validate_button.setToolTip("Mémorise vos choix manuels pour affiner les prochains tris de ce profil.")
+        for b in (self.validate_button, self.delete_batch_button):
             layout.addWidget(b)
         self.finish_dialog(self.options_dialog, layout)
 
@@ -725,442 +605,6 @@ class Window(QMainWindow):
         layout.addWidget(self.resume_button)
         layout.addWidget(self.recovery_button)
         self.finish_dialog(self.tasks_dialog, layout)
-
-        self.editor_panel = QWidget(self)
-        self.editor_panel.hide()
-        self.editor_panel.setMaximumWidth(300)
-        layout = QVBoxLayout(self.editor_panel)
-        layout.addWidget(label("Retouche", "heading"))
-        self.edit_scope = label("", "muted")
-        layout.addWidget(self.edit_scope)
-        self.build_prompt_editor(layout)
-        layout.addWidget(label("Réglages globaux", "heading"))
-        form = QFormLayout()
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
-        self.sliders, self.slider_labels = {}, {}
-        names = {"intensity": "Intensité du style", "exposure": "Exposition (IL)", "temperature": "Température",
-                 "contrast": "Contraste", "saturation": "Saturation"}
-        for key, bounds in LIMITS.items():
-            slider = ResettableSlider()
-            if key == "temperature":
-                slider.setRange(4000, 20000)
-                slider.setSingleStep(25)
-                slider.setPageStep(250)
-                slider.setToolTip("Balance du rendu. 6 500 K conserve la balance de départ. Augmentez pour réchauffer.")
-            else:
-                slider.setRange(round(bounds[0] * 100), round(bounds[1] * 100))
-            slider.setAccessibleName(names[key])
-            slider.valueChanged.connect(lambda value, k=key: self.adjust(k, warmth_from_kelvin(value) if k == "temperature" else value / 100))
-            slider.reset.connect(lambda k=key: self.reset_setting(k))
-            self.sliders[key] = slider
-            name = SettingLabel(names[key])
-            self.slider_labels[key] = (name, names[key])
-            form.addRow(name, slider)
-        layout.addLayout(form)
-        self.neutral_button = button("Partir de zéro", lambda: self.restore_recipe(neutral=True))
-        self.restore_button = button("Rétablir la proposition", self.restore_recipe)
-        layout.addWidget(self.neutral_button)
-        layout.addWidget(self.restore_button)
-        self.build_tools_editor(layout)
-        layout.addStretch()
-
-    def build_tools_editor(self, layout):
-        """Clarté, courbe des tons et TSL, repliables sous les curseurs globaux."""
-        self.tools_toggle = QToolButton()
-        self.tools_toggle.setText("Clarté, courbe et TSL")
-        self.tools_toggle.setCheckable(True)
-        self.tools_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.tools_toggle.setArrowType(Qt.ArrowType.RightArrow)
-        self.tools_toggle.setAccessibleName("Afficher les outils avancés")
-        layout.addWidget(self.tools_toggle)
-        self.tools_box = QWidget()
-        self.tools_box.hide()
-        self.tools_toggle.toggled.connect(self.tools_box.setVisible)
-        self.tools_toggle.toggled.connect(lambda on: self.tools_toggle.setArrowType(
-            Qt.ArrowType.DownArrow if on else Qt.ArrowType.RightArrow))
-        form = QFormLayout(self.tools_box)
-        form.setContentsMargins(0, 0, 0, 0)
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
-        self.tool_sliders, self.tool_labels = {}, {}
-
-        def add(path, title, tip):
-            slider = ResettableSlider()
-            slider.setRange(-100, 100)
-            slider.setAccessibleName(title)
-            slider.setToolTip(tip + "\nDouble-clic : revenir à la valeur proposée.")
-            slider.valueChanged.connect(lambda value, p=path: self.adjust_tool(p, value / 100))
-            slider.reset.connect(lambda p=path: self.reset_tool(p))
-            name = SettingLabel(title)
-            self.tool_sliders[path] = slider
-            self.tool_labels[path] = (name, title)
-            form.addRow(name, slider)
-
-        add(("clarity",), "Clarté", "Contraste local des tons moyens : du relief sans changer la luminosité moyenne. "
-            "Négatif : adoucit (peau, brume).")
-        form.addRow(label("Courbe des tons", "muted"))
-        for key, title in zip(TOOL_CURVE, TOOL_CURVE_LABELS, strict=True):
-            add(("curve", key), title, "Courbe paramétrique : éclaircit ou assombrit cette plage de tons.")
-        form.addRow(label("TSL — teinte, saturation, luminance", "muted"))
-        self.hsl_color = QComboBox()
-        self.hsl_color.addItems(TOOL_COLOR_LABELS)
-        self.hsl_color.setAccessibleName("Couleur réglée")
-        self.hsl_color.currentIndexChanged.connect(lambda _: self.show_tools())
-        form.addRow(self.hsl_color)
-        for index, title in enumerate(("Teinte", "Saturation", "Luminance")):
-            add(("hsl", index), title, "Agit seulement sur la couleur choisie ci-dessus ; les gris restent neutres.")
-        self.tools_summary = label("", "muted")
-        form.addRow(self.tools_summary)
-        self.reset_tools_button = button("Remettre les outils à la proposition", lambda: self.reset_tool(None))
-        form.addRow(self.reset_tools_button)
-        layout.addWidget(self.tools_box)
-
-    def tool_path(self, path):
-        """Chemin (clé, sous-clé) concret : la couleur TSL dépend de la liste."""
-        if path and path[0] == "hsl":
-            return ("hsl", TOOL_COLORS[self.hsl_color.currentIndex()], path[1])
-        return path
-
-    @staticmethod
-    def read_tool(tools, path):
-        if path[0] == "clarity":
-            return tools["clarity"]
-        if path[0] == "curve":
-            return tools["curve"][path[1]]
-        return tools["hsl"][path[1]][path[2]]
-
-    @staticmethod
-    def write_tool(tools, path, value):
-        if path[0] == "clarity":
-            tools["clarity"] = value
-        elif path[0] == "curve":
-            tools["curve"][path[1]] = value
-        else:
-            tools["hsl"][path[1]][path[2]] = value
-
-    def shown_tools(self, data):
-        """Valeurs affichées : les outils du lot, ou les seuls réglages manuels sans la retouche du lot."""
-        if self.filter_enabled():
-            return normalize_tools(data.get("tools"))
-        return tools_difference(data.get("tools"), data.get("initial_tools"))
-
-    def adjust_tool(self, path, value):
-        if not self.editable():
-            return
-        path = self.tool_path(path)
-        rows = self.editable_rows()
-        for row in rows:
-            data = row["data"]
-            tools = normalize_tools(data.get("tools"))
-            if not self.filter_enabled():
-                value_total = self.read_tool(normalize_tools(data.get("initial_tools")), path) + value
-            else:
-                value_total = value
-            self.write_tool(tools, path, max(-1., min(1., value_total)))
-            data["tools"] = tools
-            data["validated"] = False
-        self.store.save_photos(rows)
-        self.show_tools()
-        self.preview_timer.start(100)
-
-    def reset_tool(self, path):
-        """Revient à la proposition du profil (ou à zéro sans la retouche du lot)."""
-        if not self.editable():
-            return
-        rows = self.editable_rows()
-        for row in rows:
-            data = row["data"]
-            initial = normalize_tools(data.get("initial_tools"))
-            if path is None:
-                data["tools"] = initial
-            else:
-                concrete = self.tool_path(path)
-                tools = normalize_tools(data.get("tools"))
-                self.write_tool(tools, concrete, self.read_tool(initial, concrete))
-                data["tools"] = tools
-            data["validated"] = False
-        self.store.save_photos(rows)
-        self.show_tools()
-        self.preview_timer.start(100)
-
-    def show_tools(self):
-        row = self.current_photo
-        readable = bool(row) and "error" not in row["data"]
-        tools = self.shown_tools(row["data"]) if readable else normalize_tools(None)
-        for path, slider in self.tool_sliders.items():
-            value = self.read_tool(tools, self.tool_path(path))
-            slider.blockSignals(True)
-            slider.setValue(round(value * 100))
-            slider.blockSignals(False)
-            name, title = self.tool_labels[path]
-            name.set_value(f"{round(value * 100):+d}" if value else "")
-        summary = describe_tools(tools) if readable else ""
-        if readable and tools.get("points"):
-            summary += " · courbe par points lue d’un XMP"
-        self.tools_summary.setText(summary or "Aucun outil avancé sur cette photo.")
-        if readable and summary and not self.tools_toggle.isChecked():
-            self.tools_toggle.setText("Clarté, courbe et TSL ●")
-        else:
-            self.tools_toggle.setText("Clarté, courbe et TSL")
-
-    def build_prompt_editor(self, layout):
-        """Retouches locales par consigne : zone détectée + réglages, sans génération."""
-        box = QFrame()
-        box.setObjectName("promptBox")
-        outer = layout
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.addWidget(label("Retouche par consigne", "promptTitle"))
-        layout.addWidget(label("Écrivez en français ce que vous voulez changer. Atelier repère la zone "
-                               "(ciel, peau, sujet, fond, une couleur, les ombres, un côté…) et y règle "
-                               "lumière, couleur, contraste ou netteté, avec un bord progressif. "
-                               "Aucun pixel n’est inventé : rien n’est ajouté ni effacé.", "muted"))
-        self.prompt_input = QLineEdit()
-        self.prompt_input.setPlaceholderText("Ex. : éclaircis légèrement les visages")
-        self.prompt_input.setAccessibleName("Consigne de retouche locale")
-        self.prompt_input.setToolTip("Exemples : « ciel trop blanc », « fond plus sombre », "
-                                     "« réchauffe la peau », « sature les verts de 20 % ».")
-        self.prompt_input.returnPressed.connect(self.apply_prompt)
-        layout.addWidget(self.prompt_input)
-        row = QHBoxLayout()
-        row.addWidget(button("Appliquer", self.apply_prompt, True), 1)
-        guide = QToolButton()
-        guide.setText("Exemples")
-        guide.setToolTip("Ce que la consigne sait faire, avec des exemples")
-        guide.setAccessibleName("Aide de la retouche par consigne")
-        guide.clicked.connect(lambda: help_ui.show_prompt_help(self.viewer or self))
-        row.addWidget(guide)
-        layout.addLayout(row)
-        self.prompt_quality = label("", "muted")
-        self.prompt_quality.setAccessibleName("Effet sur la qualité de la photo")
-        layout.addWidget(self.prompt_quality)
-        self.prompt_feedback = label("", "muted")
-        layout.addWidget(self.prompt_feedback)
-        self.local_list = QListWidget()
-        self.local_list.setMaximumHeight(130)
-        self.local_list.setWordWrap(True)
-        self.local_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.local_list.setAccessibleName("Retouches locales de la photo")
-        self.local_list.setToolTip("Décochez une retouche pour la désactiver sans la perdre.")
-        self.local_list.itemChanged.connect(self.toggle_local_edit)
-        self.local_list.currentRowChanged.connect(self.show_local_strength)
-        layout.addWidget(self.local_list)
-        self.local_strength_label = SettingLabel("Intensité de la retouche sélectionnée")
-        layout.addWidget(self.local_strength_label)
-        self.local_strength = ResettableSlider()
-        self.local_strength.setRange(0, 200)
-        self.local_strength.setValue(100)
-        self.local_strength.setAccessibleName("Intensité de la retouche locale sélectionnée")
-        self.local_strength.valueChanged.connect(self.set_local_strength)
-        self.local_strength.reset.connect(lambda: self.local_strength.setValue(100))
-        layout.addWidget(self.local_strength)
-        row = QHBoxLayout()
-        self.remove_local_button = button("Retirer", self.remove_local_edit)
-        self.clear_local_button = button("Tout retirer", lambda: self.remove_local_edit(everything=True))
-        row.addWidget(self.remove_local_button)
-        row.addWidget(self.clear_local_button)
-        layout.addLayout(row)
-        outer.addWidget(box)
-        self.show_local_strength()
-
-    def show_prompt_quality(self):
-        row = self.current_photo
-        if not row or "error" in row["data"]:
-            self.prompt_quality.setText("")
-            return
-        text, warning = prompt_quality_text(row["path"], active_crop(row["data"], self.model.crops_enabled))
-        self.prompt_quality.setObjectName("qualityWarning" if warning else "muted")
-        self.prompt_quality.style().unpolish(self.prompt_quality)
-        self.prompt_quality.style().polish(self.prompt_quality)
-        self.prompt_quality.setText(text)
-
-    def editable_rows(self):
-        return [r for r in self.selected_rows() if "error" not in r["data"]]
-
-    def apply_prompt(self):
-        if not self.editable():
-            return
-        text = self.prompt_input.text().strip()
-        if not text:
-            return
-        edits, unknown = parse_prompt(text)
-        rows = self.editable_rows()
-        if edits and rows:
-            for row in rows:
-                row["data"].setdefault("local_edits", []).extend(copy.deepcopy(edits))
-                row["data"]["validated"] = False
-            self.store.save_photos(rows)
-            self.prompt_input.clear()
-            message = f"{len(edits)} retouche(s) ajoutée(s) sur {len(rows)} photo(s)."
-        elif edits:
-            message = "Sélectionnez une photo lisible avant d’appliquer la consigne."
-        else:
-            message = "Consigne non comprise. Le bouton « Exemples » liste les formulations reconnues."
-        if edits and unknown:
-            message += " Ignoré : « " + " », « ".join(unknown) + " »."
-        self.prompt_feedback.setText(message)
-        self.show_local_edits(select=len(self.local_edits()) - 1)
-        self.preview_timer.start(100)
-
-    def local_edits(self):
-        row = self.current_photo
-        return row["data"].get("local_edits", []) if row and "error" not in row["data"] else []
-
-    def show_local_edits(self, select=None):
-        current = self.local_list.currentRow() if select is None else select
-        self.local_list.blockSignals(True)
-        self.local_list.clear()
-        for edit in self.local_edits():
-            item = QListWidgetItem(local_item_text(edit))
-            item.setData(Qt.ItemDataRole.UserRole, edit["id"])
-            item.setToolTip(f"Consigne : {edit.get('prompt', '')}")
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked if edit.get("enabled", True) else Qt.CheckState.Unchecked)
-            if edit.get("proposed"):
-                item.setToolTip("Proposée par le profil d’après vos photos validées. "
-                                "Décochez-la pour la refuser : le refus sera appris à la validation.")
-                if not self.filter_enabled():
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-                    item.setToolTip("Proposition du profil, masquée tant que la retouche du lot est retirée.")
-            self.local_list.addItem(item)
-        if self.local_list.count():
-            self.local_list.setCurrentRow(max(0, min(current, self.local_list.count() - 1)))
-        self.local_list.blockSignals(False)
-        self.show_local_strength()
-
-    def update_local_edit(self, identifier, **fields):
-        rows = [r for r in self.editable_rows() if any(e["id"] == identifier for e in r["data"].get("local_edits", []))]
-        if not self.editable() or not rows:
-            return
-        for row in rows:
-            for edit in row["data"]["local_edits"]:
-                if edit["id"] == identifier:
-                    edit.update(fields)
-            row["data"]["validated"] = False
-        self.store.save_photos(rows)
-        self.preview_timer.start(100)
-
-    def toggle_local_edit(self, item):
-        self.update_local_edit(item.data(Qt.ItemDataRole.UserRole),
-                               enabled=item.checkState() == Qt.CheckState.Checked)
-
-    def show_local_strength(self, *_):
-        item = self.local_list.currentItem()
-        edit = next((e for e in self.local_edits() if item and e["id"] == item.data(Qt.ItemDataRole.UserRole)), None)
-        for widget in (self.local_strength, self.remove_local_button):
-            widget.setEnabled(edit is not None)
-        # Nothing to manage before the first instruction: keep the box short.
-        for widget in (self.local_list, self.local_strength_label, self.local_strength,
-                       self.remove_local_button, self.clear_local_button):
-            widget.setVisible(bool(self.local_edits()))
-        self.clear_local_button.setEnabled(bool(self.local_edits()))
-        self.local_strength.blockSignals(True)
-        self.local_strength.setValue(round(edit.get("strength", 1.) * 100) if edit else 100)
-        self.local_strength.blockSignals(False)
-        self.local_strength_label.set_value(f"{self.local_strength.value()} %")
-
-    def set_local_strength(self, value):
-        item = self.local_list.currentItem()
-        if item is None:
-            return
-        self.update_local_edit(item.data(Qt.ItemDataRole.UserRole), strength=value / 100)
-        edit = next((e for e in self.local_edits() if e["id"] == item.data(Qt.ItemDataRole.UserRole)), None)
-        if edit:
-            self.local_list.blockSignals(True)
-            item.setText(local_item_text(edit))
-            self.local_list.blockSignals(False)
-        self.local_strength_label.set_value(f"{value} %")
-
-    def remove_local_edit(self, everything=False):
-        if not self.editable():
-            return
-        item = self.local_list.currentItem()
-        if not everything and item is None:
-            return
-        identifier = None if everything else item.data(Qt.ItemDataRole.UserRole)
-        rows = self.editable_rows()
-        for row in rows:
-            edits = row["data"].get("local_edits", [])
-            row["data"]["local_edits"] = [e for e in edits if identifier is not None and e["id"] != identifier]
-            row["data"]["validated"] = False
-        self.store.save_photos(rows)
-        self.prompt_feedback.setText("Retouches locales retirées." if everything else "Retouche retirée.")
-        self.show_local_edits()
-        self.preview_timer.start(100)
-
-    def open_editor(self):
-        if not self.retouch_button.isEnabled():
-            return
-        self.enlarge(edit=True)
-
-    def start_editing(self, active):
-        if not active:
-            return
-        if self.before_button.isChecked():
-            self.before_button.setChecked(False)
-            self.request_preview()
-
-    def open_crop(self):
-        row = self.current_photo
-        if not row or not self.editable() or "error" in row["data"]:
-            return
-        directory = self.store.private_dir(self.profile(), "batches", self.current_batch)
-        source = QPixmap(str(directory / f"{row['id']}.png"))
-        if source.isNull():
-            self.error("L’aperçu de cette photo est introuvable. Réimportez la photo pour la recadrer.")
-            return
-        dialog = CropDialog(self.viewer or self, source, row["data"], Path(row["path"]).name)
-        dialog.setWindowState(dialog.windowState() | Qt.WindowState.WindowMaximized)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            crop = list(dialog.canvas.crop) if dialog.canvas.crop != FULL else None
-            history = [list(c) for c in dialog.history]
-            if crop != active_crop(row["data"], self.model.crops_enabled) or history != row["data"].get("crop_history", []) or crop != row["data"].get("crop"):
-                data = dict(row["data"], crop=crop, crop_history=history, crop_enabled=True, validated=False)
-                if not self.model.crops_enabled:
-                    data["crop_when_off"] = bool(crop)
-                self.save_crop(row, data)
-        dialog.deleteLater()
-
-    def save_crop(self, row, data):
-        try:
-            self.store.save_photos([dict(row, data=data)])
-        except sqlite3.Error as exc:
-            self.error(exc)
-            return
-        row["data"] = data
-        self.model.cache.pop(row["id"], None)
-        index = self.gallery.currentIndex()
-        self.model.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
-        self.before_button.setChecked(False)
-        self.photo_changed(index)
-
-    def toggle_photo_crop(self):
-        row = self.current_photo
-        if not row or not self.editable() or not row["data"].get("crop"):
-            return
-        enabled = not active_crop(row["data"], self.model.crops_enabled)
-        data = dict(row["data"], crop_enabled=enabled, validated=False)
-        if not self.model.crops_enabled:
-            data["crop_when_off"] = enabled
-        self.save_crop(row, data)
-
-    def toggle_batch_crops(self):
-        if not self.editable():
-            return
-        enabled = not self.model.crops_enabled
-        try:
-            self.store.set_batch_crops(self.current_batch, enabled)
-        except sqlite3.Error as exc:
-            self.error(exc)
-            return
-        for row in self.rows:
-            row["data"].pop("crop_when_off", None)
-        self.model.crops_enabled = enabled
-        self.model.cache.clear()
-        if self.model.rows:
-            self.model.dataChanged.emit(self.model.index(0), self.model.index(len(self.model.rows) - 1), [Qt.ItemDataRole.DecorationRole])
-        self.before_button.setChecked(False)
-        self.update_filter_ui()
-        self.photo_changed(self.gallery.currentIndex())
 
     def set_theme(self, name):
         self.theme = name
@@ -1216,22 +660,16 @@ class Window(QMainWindow):
             action.setChecked(self.settings.value(f"panels/{i}/visible", True, type=bool))
         self.split.setSizes([w if a.isChecked() else 0 for w, a in zip(self.layout_sizes, self.panel_actions, strict=True)])
 
-    def enlarge(self, *, edit=False):
+    def enlarge(self):
         if not self.current_photo or self.viewer is not None:
             return
-        viewer = PhotoViewer(self, self.editor_panel)
+        viewer = PhotoViewer(self)
         self.viewer = viewer
         viewer.navigate.connect(self.move_photo)
-        viewer.retouch.toggled.connect(self.start_editing)
-        viewer.crop.clicked.connect(self.open_crop)
-        viewer.toggle_crop.clicked.connect(self.toggle_photo_crop)
+        viewer.decided.connect(self.decide)
         viewer.setWindowState(viewer.windowState() | Qt.WindowState.WindowMaximized)
         self.update_viewer()
-        viewer.retouch.setChecked(edit)
         viewer.exec()
-        viewer.release_editor()
-        self.editor_panel.hide()
-        self.editor_panel.setParent(self)
         self.viewer = None
         viewer.deleteLater()
 
@@ -1248,13 +686,10 @@ class Window(QMainWindow):
         self.viewer.setWindowTitle(self.photo_title.text())
         count = self.model.rowCount()
         self.viewer.counter.setText(f"{self.gallery.currentIndex().row() + 1} / {count}")
-        self.viewer.retouch.setEnabled(self.retouch_button.isEnabled())
-        self.viewer.crop.setEnabled(self.crop_button.isEnabled())
-        self.viewer.toggle_crop.setVisible(not self.photo_crop_button.isHidden())
-        self.viewer.toggle_crop.setEnabled(self.photo_crop_button.isEnabled())
-        self.viewer.toggle_crop.setText(self.photo_crop_button.text())
-        self.editor_panel.setEnabled(self.retouch_button.isEnabled())
-        self.edit_scope.setText(f"{len(self.selected_rows())} photo(s) sélectionnée(s) · Réglages enregistrés en direct")
+        self.viewer.reasons.setText(self.reasons.text())
+        row = self.current_photo
+        readable = bool(row) and "error" not in row["data"]
+        self.viewer.show_decision(selection_status(row["data"]) if row else None, readable and self.editable())
         self.viewer.display(self.pixmap, self.preview.text())
 
     def eventFilter(self, widget, event):
@@ -1326,13 +761,12 @@ class Window(QMainWindow):
             if self.batches.count():
                 self.batches.setCurrentRow(0)
         else:
-            self.profile_info.setText("Un profil mémorise votre sélection, votre filtre et vos corrections.")
+            self.profile_info.setText("Un profil mémorise votre sélection, vos références et vos corrections de tri.")
             self.profile_summary.setText("Créez un profil, puis ajoutez vos exemples.")
             self.clear_feedback_button.setEnabled(False)
         count = len(self.store.unfinished_jobs(self.profile())) if self.profile() else 0
         self.resume_button.setText(f"Gérer les tâches ({count})")
         self.recovery_button.setEnabled(bool(self.profile()) and not self.busy())
-        self.update_filter_ui()
 
     def new_profile(self):
         name, ok = QInputDialog.getText(self, "Nouveau profil", "Nom du profil")
@@ -1347,11 +781,9 @@ class Window(QMainWindow):
         self.clear_feedback_button.setEnabled(bool(count) and not self.busy())
         learned = self.store.model(self.profile())
         if learned:
-            text = (f"Appris sur {learned['reportages']} reportage(s) : {learned['photos']} photos, {learned['kept']} retenues"
-                    + (f", filtre sur {learned['pairs']} retouches" if learned.get("look") else "")
-                    + (f", {len(learned['examples'])} exemples de rendu, {learned.get('crops', 0)} recadrages mesurés" if learned.get("examples") else ""))
+            text = f"Appris sur {learned['reportages']} reportage(s) : {learned['photos']} photos, {learned['kept']} retenues"
         else:
-            text = "Sélection et filtre par défaut"
+            text = "Sélection par défaut"
         text += f"\n{count} corrections mémorisées"
         text += f"\n{references} référence(s) actives"
         self.profile_info.setText(text)
@@ -1379,11 +811,10 @@ class Window(QMainWindow):
     def delete_selected_batch(self):
         if self.busy() or not self.current_batch:
             return
-        answer = QMessageBox.question(self, "Supprimer le lot", f"Supprimer « {self.batch_title.text()} », ses aperçus et ses tâches associées ?\n\nLes photos d’origine, les exports et les corrections déjà apprises par le profil seront conservés. Les retouches et le tri de ce lot seront retirés.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        answer = QMessageBox.question(self, "Supprimer le lot", f"Supprimer « {self.batch_title.text()} », ses aperçus et ses tâches associées ?\n\nLes photos d’origine, les exports et les corrections déjà apprises par le profil seront conservés. Le tri de ce lot sera retiré.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
         if answer != QMessageBox.StandardButton.Yes:
             return
         try:
-            self.stop_preview()
             self.store.delete_batch(self.current_batch, self.profile())
             self.profile_changed()
             self.progress_label.setText("Lot supprimé · Les apprentissages validés sont conservés dans le profil.")
@@ -1402,12 +833,11 @@ class Window(QMainWindow):
     def delete_profile(self):
         if not self.profile():
             return
-        message = ("Supprimer ce profil, ses choix appris et le travail de tri et de retouche associé dans l’application ?\n\n"
+        message = ("Supprimer ce profil, ses choix appris et le travail de tri associé dans l’application ?\n\n"
                    "Les photos sur votre disque, y compris celles déjà exportées, seront conservées.")
         result = QMessageBox.question(self, "Supprimer le profil", message, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
         if result == QMessageBox.StandardButton.Yes:
             try:
-                self.stop_preview()
                 self.store.wipe(self.profile(), delete=True)
                 self.reload_profiles()
             except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
@@ -1504,7 +934,6 @@ class Window(QMainWindow):
             data = row["data"]
             if self.analysis_incomplete and "error" not in data and "score" not in data:
                 data["selection_pending"] = True
-        self.batch_look = batch["snapshot"].get("look") if batch else None
         if batch:
             self.selectivity.blockSignals(True)
             self.selectivity.setValue(round(batch["selectivity"] * 100))
@@ -1512,16 +941,12 @@ class Window(QMainWindow):
         self.batch_title.setText(batch["name"] if batch else "Votre premier lot")
         self.batch_meta.setText(f"Profil · {self.profiles.currentText()}     Sélectivité · {strength(self.selectivity.value())}"
                                 if batch else "Préparez votre profil et ses exemples à gauche, puis importez un lot.")
-        self.filter_button.setChecked(batch["filter_enabled"] if batch else True)
-        self.model.crops_enabled = batch["crops_enabled"] if batch else True
-        self.update_filter_ui()
         self.apply_filter()
         self.update_export_control()
 
     def apply_filter(self, _index=None, *, photo_id=None):
         photo_id = photo_id or (self.current_photo["id"] if self.current_photo else None)
         self.current_photo = None
-        self.token += 1
         self.pixmap = None
         self.preview.clear()
         self.preview.setText("Importer un lot pour commencer." if not self.current_batch else "Aucune photo dans cette vue.")
@@ -1530,10 +955,6 @@ class Window(QMainWindow):
         self.photo_title.clear()
         self.reasons.clear()
         self.large_button.setEnabled(False)
-        self.retouch_button.setEnabled(False)
-        self.crop_button.setEnabled(False)
-        self.photo_crop_button.hide()
-        self.before_button.setEnabled(False)
         self.variants_button.setVisible(not self.group_filter)
         self.variants_button.setEnabled(False)
         self.prefer_button.setVisible(bool(self.group_filter))
@@ -1574,40 +995,13 @@ class Window(QMainWindow):
         self.update_selection_scope()
         self.update_viewer()
 
-    def filter_enabled(self):
-        return self.filter_button.isChecked()
-
-    def update_filter_ui(self):
-        enabled = self.filter_enabled()
-        self.filter_button.setText("Retirer la retouche sur tout le lot" if enabled else "Réappliquer la retouche sur tout le lot")
-        self.filter_button.setEnabled(bool(self.current_batch) and not self.busy())
-        self.batch_crop_button.setText("Retirer les recadrages du lot" if self.model.crops_enabled
-                                       else "Réappliquer les recadrages du lot")
-        self.batch_crop_button.setEnabled(self.editable())
-        self.restore_button.setEnabled(enabled and not self.busy())
-
-    def toggle_filter(self):
-        if not self.current_batch or self.busy():
-            self.filter_button.setChecked(not self.filter_button.isChecked())
-            return
-        self.store.set_filter(self.current_batch, self.filter_enabled())
-        for row in self.rows:
-            data = row["data"]
-            if data.get("manual_recipe") or data.get("recipe") != data.get("initial_recipe"):
-                data["validated"] = False
-        self.update_filter_ui()
-        self.progress_label.setText("Retouche du lot réappliquée." if self.filter_enabled()
-                                    else "Retouche du lot retirée. Utilisez « Retoucher » pour régler les photos vous-même.")
-        self.before_button.setChecked(False)
-        self.photo_changed(self.gallery.currentIndex())
-
     def selected_rows(self):
         return [self.model.rows[i.row()] for i in self.gallery.selectionModel().selectedIndexes()]
 
     def update_selection_scope(self, *_):
         count = len(self.selected_rows())
         self.selection_scope.setText(
-            f"{count} photos sélectionnées · Décisions et retouches communes" if count > 1 else
+            f"{count} photos sélectionnées · Décision commune" if count > 1 else
             "1 photo sélectionnée · Ctrl / Cmd + clic pour en choisir plusieurs" if count else "")
         self.selection_scope.setVisible(bool(count))
 
@@ -1623,12 +1017,6 @@ class Window(QMainWindow):
         readable = "error" not in d
         editable = readable and self.editable()
         self.large_button.setEnabled(readable)
-        self.before_button.setEnabled(readable)
-        self.retouch_button.setEnabled(editable)
-        self.crop_button.setEnabled(editable)
-        self.photo_crop_button.setVisible(readable and bool(d.get("crop")))
-        self.photo_crop_button.setEnabled(editable)
-        self.photo_crop_button.setText("Retirer le recadrage" if active_crop(d, self.model.crops_enabled) else "Réappliquer le recadrage")
         self.variants_button.setEnabled(bool(d.get("group")))
         self.prefer_button.setEnabled(editable and bool(self.group_filter))
         for status, b in zip(("keep", "review", "reject"), self.decision_buttons, strict=True):
@@ -1638,94 +1026,18 @@ class Window(QMainWindow):
         self.reasons.setText(d.get("error") or " · ".join(d.get("reasons", [])))
         self.pixmap = None
         self.preview.clear()
-        if "error" in d:
-            self.token += 1
+        if readable:
+            # The analysis copy (1 280 px at most) is the preview: nothing to render.
+            path = self.store.private_dir(self.profile(), "batches", self.current_batch) / f"{self.current_photo['id']}.png"
+            pixmap = QPixmap(str(path))
+            if pixmap.isNull():
+                self.preview.setText("Aperçu introuvable : réimportez cette photo.")
+            else:
+                self.pixmap = pixmap
+        else:
             self.preview.setText("Impossible de lire cette photo.")
-            self.show_local_edits(select=0)
-            self.show_tools()
-            self.update_viewer()
-            return
-        self.preview.setText("Préparation de l’aperçu…")
+        self.scale_preview()
         self.update_viewer()
-        recipe = active_recipe(d, self.filter_enabled())
-        for key in self.sliders:
-            self.show_setting(key, recipe[key])
-        self.show_tools()
-        self.show_local_edits(select=0)
-        self.show_prompt_quality()
-        self.request_preview()
-
-    def show_setting(self, key, value):
-        slider = self.sliders[key]
-        position = temperature_kelvin(value) if key == "temperature" else round(value * 100)
-        slider.blockSignals(True)
-        slider.setValue(position)
-        slider.blockSignals(False)
-        widget, title = self.slider_labels[key]
-        reading = f"{position:,} K".replace(",", " ") if key == "temperature" else f"{value:.2f}"
-        widget.set_value(reading)
-
-    def request_preview(self):
-        self.before_button.setText("Voir la retouche" if self.before_button.isChecked() else "Voir l’original")
-        if not self.current_photo or "error" in self.current_photo["data"]:
-            return
-        if self.preview_process is None:
-            self.preview_process = self.context.Process(target=preview_worker, args=(self.preview_in, self.preview_out), daemon=True)
-            self.preview_process.start()
-        self.token += 1
-        d = self.current_photo["data"]
-        path = self.store.private_dir(self.profile(), "batches", self.current_batch) / f"{self.current_photo['id']}.png"
-        before = self.before_button.isChecked() or (not self.filter_enabled() and not d.get("manual_recipe")
-                                                    and not applied_local_edits(d.get("local_edits"), False)
-                                                    and not active_tools(d, False))
-        self.preview_in.put({"token": self.token, "path": str(path), "recipe": active_recipe(d, self.filter_enabled()), "style": d["style"],
-                             "look": self.batch_look, "before": before,
-                             "local": applied_local_edits(d.get("local_edits"), self.filter_enabled()),
-                             "tools": active_tools(d, self.filter_enabled()),
-                             "crop": None if self.before_button.isChecked() else active_crop(d, self.model.crops_enabled)})
-
-    def adjust(self, key, value):
-        if not self.editable():
-            return
-        rows = self.selected_rows()
-        for row in rows:
-            if "error" not in row["data"]:
-                data = row["data"]
-                recipe = data["recipe"] if self.filter_enabled() else data.setdefault("manual_recipe", dict(IDENTITY_RECIPE))
-                recipe[key] = value
-                row["data"]["validated"] = False
-        self.store.save_photos(rows)
-        self.show_setting(key, value)
-        self.preview_timer.start(100)
-
-    def reset_setting(self, key):
-        if not self.editable():
-            return
-        if not self.filter_enabled():
-            self.adjust(key, IDENTITY_RECIPE[key])
-            self.photo_changed(self.gallery.currentIndex())
-            return
-        rows = [r for r in self.selected_rows() if "error" not in r["data"]]
-        for row in rows:
-            row["data"]["recipe"][key] = row["data"]["initial_recipe"][key]
-            row["data"]["validated"] = False
-        self.store.save_photos(rows)
-        if self.current_photo and "error" not in self.current_photo["data"]:
-            value = self.current_photo["data"]["recipe"][key]
-            self.show_setting(key, value)
-        self.preview_timer.start(100)
-
-    def restore_recipe(self, neutral=False):
-        if not self.editable():
-            return
-        rows = self.selected_rows()
-        for row in rows:
-            if "error" not in row["data"]:
-                field = "recipe" if self.filter_enabled() else "manual_recipe"
-                row["data"][field] = dict(IDENTITY_RECIPE if neutral else row["data"]["initial_recipe"])
-                row["data"]["validated"] = False
-        self.store.save_photos(rows)
-        self.photo_changed(self.gallery.currentIndex())
 
     def decide(self, status):
         if not self.editable():
@@ -1738,6 +1050,11 @@ class Window(QMainWindow):
                 row["data"]["validated"] = False
         self.store.save_photos(rows)
         self.apply_filter()
+        # In the enlarged view, deciding moves on to the next frame, as on a light table
+        # (unless the photo already left the current view, which then shows the next one).
+        if (len(rows) == 1 and self.viewer is not None and self.current_photo
+                and self.current_photo["id"] == rows[0]["id"]):
+            self.move_photo(1)
 
     def show_variants(self):
         if self.current_photo and self.current_photo["data"].get("group"):
@@ -1822,57 +1139,10 @@ class Window(QMainWindow):
         unvalidated = any(not r["data"].get("validated") for r in self.rows if "error" not in r["data"])
         dialog, layout = self.tool_dialog("Exporter les photos retenues")
         layout.addWidget(label(f"{kept} photo(s) retenue(s) · {self.batch_title.text()}", "heading"))
-        formats = QComboBox()
-        choices = [
-            ("JPEG", "JPEG", "Export aux dimensions du cadrage, sans agrandissement."),
-            ("PNG", "PNG", "Rendu pleine résolution · sRGB 8 bits · compression sans perte du rendu."),
-            ("TIFF 16 bits", "TIFF", "Rendu pleine résolution · sRGB 16 bits par canal · sans compression, fichiers plus volumineux. Préserve les nuances du développement RAW ; n’ajoute pas de détails à un JPEG."),
-            ("RAW + XMP si nécessaire", "RAW", "RAW copié à l’identique. Atelier ajoute un XMP pour les corrections globales, le recadrage, la clarté, la courbe, la TSL et les retouches par consigne (masques Lightroom). Les JPEG et PNG sources sont exportés en JPEG."),
-            ("Copie à l’identique", "SOURCE", "Fichiers source et XMP voisins copiés, sans retouche Atelier ni réencodage."),
-        ]
-        layout.addWidget(label("Format de sortie"))
-        for title, value, _ in choices:
-            formats.addItem(title, value)
-        layout.addWidget(formats)
-        quality_label = label("Qualité JPEG")
-        quality = QComboBox()
-        quality.setAccessibleName("Qualité JPEG")
-        quality.addItem("Maximale · 100", "maximum")
-        quality.addItem("Selon le JPEG source", "source")
-        quality.addItem("Personnalisée", "custom")
-        level = QSpinBox()
-        level.setRange(1, 100)
-        level.setValue(90)
-        level.setAccessibleName("Niveau de qualité JPEG")
-        quality_note = label("", "muted")
-        for widget in (quality_label, quality, level, quality_note):
-            layout.addWidget(widget)
-        note = label("", "muted")
-
-        has_jpeg_output = any(r["data"].get("decision") == "keep" and Path(r["path"]).suffix.lower() not in RAW_EXTENSIONS for r in self.rows)
-
-        def describe(*_):
-            i = formats.currentIndex()
-            show_quality = formats.currentData() == "JPEG" or (formats.currentData() == "RAW" and has_jpeg_output)
-            for widget in (quality_label, quality, quality_note):
-                widget.setVisible(show_quality)
-            level.setVisible(show_quality and quality.currentData() == "custom")
-            quality_note.setText({
-                "maximum": "Un JPEG sans modification est copié à l’identique. Les rendus sont encodés en qualité 100.",
-                "source": "Un JPEG intact est copié. Pour un rendu, Atelier réutilise la compression du JPEG RVB source si possible, sinon la qualité 100.",
-                "custom": "Tous les JPEG sont réencodés au niveau choisi. Une valeur basse réduit généralement le poids du fichier.",
-            }[quality.currentData()])
-            state = "Les retouches et recadrages actifs sont appliqués." if self.filter_enabled() else "Les réglages manuels et recadrages actifs sont appliqués."
-            note.setText(choices[i][2] + (" " + state if choices[i][1] != "SOURCE" else ""))
-
-        layout.addWidget(note)
-        replace = QCheckBox("Remplacer les originaux au lieu de créer des copies")
-        replace.setObjectName("replaceOriginals")
-        replace_note = label("", "muted")
-        layout.addWidget(replace)
-        layout.addWidget(replace_note)
-        folder_title = label("Dossier de destination")
-        layout.addWidget(folder_title)
+        layout.addWidget(label("Les fichiers retenus sont copiés à l’identique, avec leurs XMP voisins, "
+                               "sous leur nom d’origine. Aucun fichier existant n’est écrasé ; "
+                               "les photos à vérifier et écartées ne sont pas copiées.", "muted"))
+        layout.addWidget(label("Dossier de destination"))
         destination = QLineEdit()
         destination.setReadOnly(True)
         destination.setPlaceholderText("Choisir un dossier…")
@@ -1887,34 +1157,9 @@ class Window(QMainWindow):
             path = QFileDialog.getExistingDirectory(dialog, "Dossier de destination", destination.text())
             if path:
                 destination.setText(path)
-                describe_all()
+                confirm.setEnabled(True)
 
-        browse_button = button("Parcourir…", browse)
-        folder_row.addWidget(browse_button)
-
-        def describe_replace():
-            replacing = replace.isChecked() and formats.currentData() != "SOURCE"
-            replace.setEnabled(formats.currentData() != "SOURCE")
-            replace_note.setText(
-                "Une copie à l’identique ne peut pas remplacer les originaux." if formats.currentData() == "SOURCE"
-                else "Libère de la place : chaque original retenu est remplacé dans son dossier par sa version retouchée, "
-                     "puis supprimé définitivement (pas de corbeille). Un RAW exporté en RAW + XMP n’est jamais modifié : "
-                     "seul son XMP voisin est réécrit. Les photos écartées ne sont pas touchées."
-                if replacing else "Désactivé : les originaux restent intacts et les exports sont créés dans un autre dossier.")
-            for widget in (folder_title, destination, browse_button):
-                widget.setVisible(not replacing)
-            confirm.setText(("Valider le lot et remplacer" if unvalidated else "Remplacer les originaux") if replacing
-                            else ("Valider le lot et exporter" if unvalidated else "Exporter"))
-            confirm.setEnabled(replacing or bool(destination.text()))
-
-        def describe_all(*_):
-            describe()
-            describe_replace()
-
-        formats.currentIndexChanged.connect(describe_all)
-        quality.currentIndexChanged.connect(describe_all)
-        replace.toggled.connect(describe_all)
-        describe_all()
+        folder_row.addWidget(button("Parcourir…", browse))
         controls = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         controls.button(QDialogButtonBox.StandardButton.Cancel).setText("Annuler")
         controls.rejected.connect(dialog.reject)
@@ -1923,21 +1168,9 @@ class Window(QMainWindow):
         layout.addWidget(controls)
         dialog.resize(540, dialog.sizeHint().height())
         accepted = dialog.exec() == QDialog.DialogCode.Accepted
-        replacing = replace.isChecked() and formats.currentData() != "SOURCE"
-        if accepted and replacing and QMessageBox.warning(
-                self, "Remplacer les originaux",
-                f"Les originaux des {kept} photo(s) retenue(s) vont être remplacés par leur version retouchée.\n\n"
-                "Les fichiers d’origine seront supprimés définitivement : ils ne passent pas par la corbeille "
-                "et ne pourront pas être récupérés. Ce lot ne pourra plus être exporté ensuite.\n\n"
-                "Continuer ?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
-            accepted = False
         if accepted and (not unvalidated or self.validate_batch()):
             try:
-                chosen_quality = level.value() if quality.currentData() == "custom" else quality.currentData()
-                self.launch(export_job(self.store, self.current_batch, destination.text(), formats.currentData(),
-                                       chosen_quality, replace=replacing))
+                self.launch(export_job(self.store, self.current_batch, destination.text()))
             except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
                 self.error(exc)
         dialog.deleteLater()
@@ -2068,7 +1301,6 @@ class Window(QMainWindow):
                                     QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                 try:
                     selected_batch = self.current_batch
-                    self.stop_preview()
                     self.store.delete_job(job["id"], self.profile())
                     self.profile_changed()
                     self.select_batch(selected_batch)
@@ -2116,7 +1348,6 @@ class Window(QMainWindow):
                     widget.setEnabled(True)
                 self.gallery.setAcceptDrops(True)
                 self.gallery.viewport().setAcceptDrops(True)
-                self.update_filter_ui()
                 self.cancel_button.setEnabled(False)
                 self.progress.setRange(0, 100)
                 self.progress.setValue(100 if job["state"] == "done" else 0)
@@ -2135,10 +1366,9 @@ class Window(QMainWindow):
                 if job["kind"] == "training" and job["state"] == "done":
                     summary = job["payload"].get("summary") or {}
                     message = (f"Profil appris : {summary.get('photos')} photos dont {summary.get('kept')} retenues"
-                               f" ({summary.get('reportages')} reportage(s)), {summary.get('examples', 0)} exemples de rendu, "
-                               f"{summary.get('crops', 0)} recadrages mesurés et {summary.get('pairs') or 0} paires pour le filtre couleur.")
+                               f" ({summary.get('reportages')} reportage(s)).")
                     if not summary.get("reportages"):
-                        message = "Exemples mis à jour · Sélection et filtre par défaut."
+                        message = "Exemples mis à jour · Sélection par défaut."
                     # Only worth saying when references (photos without their rush) were used.
                     if summary.get("reference_groups"):
                         count = summary["reference_groups"]
@@ -2149,32 +1379,16 @@ class Window(QMainWindow):
                         QMessageBox.information(self, APP_NAME, message + "\n\n" + "\n".join(job["payload"]["warnings"]))
                 elif job["kind"] == "export" and job["state"] == "done":
                     count = len(job["payload"]["outputs"])
-                    self.progress_label.setText(f"{count} originaux remplacés par leur version retouchée"
-                                                if job["payload"].get("replace")
-                                                else f"{count} photos exportées dans {job['payload']['destination']}")
+                    self.progress_label.setText(f"{count} photos copiées dans {job['payload']['destination']}")
                 elif job["kind"] == "recovery" and job["state"] == "done":
                     successes = len(job["payload"]["outputs"])
                     total = len(job["payload"]["paths"])
                     self.progress_label.setText(f"Récupération terminée · {successes}/{total} copie(s) enregistrée(s) "
                                                 f"dans {job['payload']['destination']}")
                 elif job["kind"] == "selection" and job["state"] == "done":
-                    self.progress_label.setText("Tri mis à jour · Choix manuels et retouches conservés · Validez à nouveau le lot avant l’export.")
+                    self.progress_label.setText("Tri mis à jour · Choix manuels conservés · Validez à nouveau le lot avant l’export.")
                 self.events.close()
                 self.active_job = None
-        try:
-            while True:
-                event = self.preview_out.get_nowait()
-                if event["token"] == self.token:
-                    if "bytes" in event:
-                        self.pixmap = QPixmap()
-                        self.pixmap.loadFromData(event["bytes"])
-                        self.scale_preview()
-                    else:
-                        self.pixmap = None
-                        self.preview.setText(event["error"])
-                        self.update_viewer()
-        except queue.Empty:
-            pass
 
     def scale_preview(self):
         if self.pixmap:
@@ -2191,22 +1405,6 @@ class Window(QMainWindow):
     def position_import_notice(self):
         self.import_notice.move((self.centralWidget().width() - self.import_notice.width()) // 2, 14)
 
-    def stop_preview(self, recreate=True):
-        self.token += 1
-        if self.preview_process is not None:
-            self.preview_in.put(None)
-            self.preview_process.join(timeout=2)
-            if self.preview_process.is_alive():
-                self.preview_process.terminate()
-                self.preview_process.join(timeout=2)
-            self.preview_process.close()
-            self.preview_process = None
-        self.preview_in.close()
-        self.preview_out.close()
-        if recreate:
-            self.preview_in = self.context.Queue()
-            self.preview_out = self.context.Queue()
-
     def closeEvent(self, event):
         if self.busy():
             self.cancel_job()
@@ -2214,8 +1412,6 @@ class Window(QMainWindow):
             event.ignore()
             return
         self.timer.stop()
-        self.preview_timer.stop()
-        self.stop_preview(recreate=False)
         for i, action in enumerate(self.panel_actions):
             self.settings.setValue(f"panels/{i}/width", self.layout_sizes[i])
             self.settings.setValue(f"panels/{i}/visible", action.isChecked())

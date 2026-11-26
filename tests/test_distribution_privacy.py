@@ -6,7 +6,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from atelier import look
 from atelier.selection import score
 from scripts.distribution_assets import (
     PUBLIC_DESCRIPTION,
@@ -29,24 +28,22 @@ def test_public_profile_strips_training_details_and_preserves_predictions():
                    references=[{"embedding": [1., 0.], "name": "private-photo.jpg"}],
                    reportages=[{"name": "private event"}], exif={"GPS": "private location"})
     private["selector"].update(source="private folder", photos=123, kept=45, samples=["private sample"])
-    private["look"].update(pairs=34, paths=["private/edit.jpg"])
-    private["look"]["tone"]["examples"] = ["private tone example"]
+    # A profile written by an editing version also carried a colour look: never published now.
+    private["look"] = {"pairs": 34, "paths": ["private/edit.jpg"], "lut": [[0.5]]}
     public = public_profile(private, encoder_version(ASSETS))
     assert public == expected
     assert public["description"] == PUBLIC_DESCRIPTION
     assert "private" not in json.dumps(public)
     x = np.random.default_rng(0).normal(size=(3, len(public["selector"]["mu"])))
     np.testing.assert_array_equal(score(private["selector"], x), score(public["selector"], x))
-    pixels = np.random.default_rng(1).uniform(size=(10, 10, 3)).astype(np.float32)
-    knots = look.knots_for(public["look"], pixels)
-    np.testing.assert_array_equal(look.apply(private["look"], pixels, knots), look.apply(public["look"], pixels, knots))
+    assert "look" not in public
 
 
 @pytest.mark.parametrize("field", ["numeric", "encoder"])
 def test_public_profile_refuses_private_strings_in_inference_fields(field):
     private = profile()
     if field == "numeric":
-        private["look"]["lut"][0][0] = "private/photo.jpg"
+        private["selector"]["w"][0] = "private/photo.jpg"
     else:
         private["selector"]["encoder"] = "private/model.onnx"
     with pytest.raises(ValueError) as error:

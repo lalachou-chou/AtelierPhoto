@@ -38,10 +38,6 @@ def public_profile(profile, expected_encoder):
         result["selector"] = {key: _numbers(selector[key]) for key in
                               ("mu", "sd", "w", "b", "feature_version", "dimension", "rate")}
         result["selector"].update(encoder=expected_encoder, source=PUBLIC_SOURCE)
-    if profile.get("look"):
-        look = profile["look"]
-        result["look"] = {key: _numbers(look[key]) for key in ("version", "lut_size", "lut")}
-        result["look"]["tone"] = {key: _numbers(look["tone"][key]) for key in ("mu", "sd", "coef")}
     return result
 
 

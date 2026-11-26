@@ -4,6 +4,7 @@ import threading
 import time
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 
 from atelier.analysis import finalize, propose, reselect
@@ -19,7 +20,7 @@ def cached_batch(store, value=.5):
     batch = store.create_batch(profile, "Lot", snapshot, value)
     for i in range(30):
         stats = {"luma": .5, "spread": .2, "saturation": .2, "sharpness": .01,
-                 "peak": .02, "noise": .001, "black": 0., "white": 0., "rgb": [.5, .5, .5]}
+                 "peak": .02, "noise": .001, "black": 0., "white": 0.}
         data = propose(stats, [1., 0.], snapshot, value)
         data.update(features=stats, embedding=[1., 0.], digest=str(i), time=i * 1000.)
         # No source files exist: selection must use only the cached analysis.
@@ -53,7 +54,7 @@ def test_selection_changes_existing_batch_and_requires_revalidation(store, tmp_p
         counts.append(sum(row["data"]["decision"] == "keep" for row in rows))
         assert all(not row["data"]["validated"] for row in rows)
         for before, after in zip(initial, rows, strict=True):
-            for key in ("recipe", "initial_recipe", "base_recipe", "style", "features", "embedding"):
+            for key in ("features", "embedding", "digest", "time"):
                 assert before["data"][key] == after["data"][key]
         with pytest.raises(ValueError, match="Validez"):
             export_job(store, batch, tmp_path)
@@ -63,17 +64,15 @@ def test_selection_changes_existing_batch_and_requires_revalidation(store, tmp_p
     assert export_job(store, batch, tmp_path)
 
 
-def test_manual_choices_and_retouched_photos_survive_repeated_selection(store):
+def test_manual_choices_survive_repeated_selection(store):
     batch = cached_batch(store)
     rows = store.photos(batch)
     # A manual correction and an explicit confirmation of a proposal.
     rows[0]["data"]["decision"] = "reject" if rows[0]["data"]["proposed"] == "keep" else "keep"
     rows[0]["data"]["manual_decision"] = True
     rows[1]["data"]["manual_decision"] = True
-    rows[2]["data"]["recipe"]["exposure"] = .3
     store.save_photos(rows)
     store.validate(batch)
-    store.set_filter(batch, False)
     before = store.photos(batch)
     feedback = store.rows("SELECT * FROM feedback")
     for value in (1., 0., 1.):
@@ -84,11 +83,10 @@ def test_manual_choices_and_retouched_photos_survive_repeated_selection(store):
             assert after[i]["data"]["decision"] == before[i]["data"]["decision"]
             assert after[i]["data"]["manual_decision"]
             assert after[i]["data"]["reasons"].count("Votre choix manuel est conservé") == 1
-        assert after[2]["data"]["recipe"] == before[2]["data"]["recipe"]
-        assert not store.batch(batch)["filter_enabled"]
         assert store.rows("SELECT * FROM feedback") == feedback
     store.validate(batch)
-    assert store.learning_count(store.batch(batch)["profile"]) == 3
+    # Only the two explicit choices teach the profile.
+    assert store.learning_count(store.batch(batch)["profile"]) == 2
 
 
 def test_reselection_refreshes_technical_verdict_and_does_not_duplicate_reasons(store):
@@ -150,7 +148,6 @@ def test_slider_loads_batch_setting_without_recalculating_and_launches_on_change
     batch = cached_batch(store, .2)
     profile = store.batch(batch)["profile"]
     other = store.create_batch(profile, "Autre", store.batch(batch)["snapshot"], .8)
-    monkeypatch.setattr(Window, "request_preview", lambda *_: None)
     launched = []
     monkeypatch.setattr(Window, "launch", lambda self, identifier: launched.append(identifier))
     window = Window(store.root)
@@ -165,6 +162,11 @@ def test_slider_loads_batch_setting_without_recalculating_and_launches_on_change
         assert job["kind"] == "selection"
         assert job["payload"] == {"batch": batch, "selectivity": .75}
         assert store.batch(other)["selectivity"] == .8
+        # Double-click returns to the balanced setting, which also recalculates.
+        store.update_job(launched[0], state="done")
+        QTest.mouseDClick(window.selectivity, Qt.MouseButton.LeftButton)
+        assert window.selectivity.value() == 50 and len(launched) == 2
+        assert store.job(launched[1])["payload"]["selectivity"] == .5
     finally:
         window.close()
 
@@ -173,7 +175,6 @@ def test_window_recalculates_in_worker_and_restores_selected_batch(qapp, store, 
     batch = cached_batch(store)
     profile = store.batch(batch)["profile"]
     store.create_batch(profile, "Plus récent", store.batch(batch)["snapshot"], .8)
-    monkeypatch.setattr(Window, "request_preview", lambda *_: None)
     errors = []
     monkeypatch.setattr(Window, "error", lambda self, error: errors.append(str(error)))
     window = Window(store.root)
@@ -206,7 +207,7 @@ def test_default_target_is_independent_of_corpus_but_personal_rate_is_preserved(
     snapshot = {"model": selector["encoder"] if selector else "no-model",
                 "selector": selector, "references": [], "feedback": []}
     stats = {"luma": .5, "spread": .2, "saturation": .2, "sharpness": .01,
-             "peak": .02, "noise": .001, "black": 0., "white": 0., "rgb": [.5] * 3}
+             "peak": .02, "noise": .001, "black": 0., "white": 0.}
     rows = []
     for i in range(100):
         embedding = [1.] + [0.] * 383

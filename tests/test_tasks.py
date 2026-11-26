@@ -106,16 +106,9 @@ def test_window_task_deletion_confirmation_and_labels(qapp, store, monkeypatch, 
     monkeypatch.setattr(TaskDialog, "exec", choose_delete)
     monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.StandardButton.Yes if confirmed else QMessageBox.StandardButton.No)
     try:
-        assert window.before_button.text() == "Voir l’original"
-        window.before_button.setChecked(True)
-        window.request_preview()
-        assert window.before_button.text() == "Voir la retouche"
-        window.before_button.setChecked(False)
-        window.request_preview()
-        assert window.before_button.text() == "Voir l’original"
-        assert window.filter_button.text() == "Retirer la retouche sur tout le lot"
-        window.filter_button.click()
-        assert window.filter_button.text() == "Réappliquer la retouche sur tout le lot"
+        # Sorting only: no editing, cropping or prompt controls remain.
+        for name in ("before_button", "filter_button", "retouch_button", "crop_button", "prompt_input", "sliders"):
+            assert not hasattr(window, name), name
         window.resume_button.click()
         assert len(store.unfinished_jobs(profile)) == (0 if confirmed else 1)
         assert window.resume_button.text() == f"Gérer les tâches ({0 if confirmed else 1})"

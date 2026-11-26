@@ -2,16 +2,13 @@ import pytest
 from PySide6.QtWidgets import QMessageBox
 
 from atelier.app import Window
-from atelier.imaging import NEUTRAL
 from atelier.store import uid
 
 
 def corrected_batch(store, profile):
     batch = store.create_batch(profile, "Lot corrigé", store.snapshot(profile, "test"), .5)
     store.save_photo(uid(), batch, "photo.jpg", {
-        "embedding": [1., 0.], "proposed": "keep", "decision": "reject",
-        "initial_recipe": dict(NEUTRAL), "base_recipe": dict(NEUTRAL),
-        "recipe": dict(NEUTRAL, exposure=.25),
+        "embedding": [1., 0.], "proposed": "keep", "decision": "reject", "manual_decision": True,
     })
     store.validate(batch, profile)
     return batch
@@ -50,8 +47,6 @@ def test_clear_feedback_preserves_training_batches_and_other_profiles(store):
 def test_clear_feedback_button_requires_confirmation_and_updates_count(qapp, store, monkeypatch, confirmed):
     profile = store.create_profile("Interface")
     batch = corrected_batch(store, profile)
-    # Avoid starting a preview worker while testing the button interaction.
-    monkeypatch.setattr(Window, "request_preview", lambda *_: None)
     monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.StandardButton.Yes if confirmed else QMessageBox.StandardButton.No)
     window = Window(store.root)
     try:

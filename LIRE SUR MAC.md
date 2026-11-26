@@ -35,7 +35,7 @@ cette autorisation. [Procédure Apple](https://support.apple.com/fr-fr/102445).
 
 Créez un profil, utilisez **Reportages et références…** pour ajouter vos rushs
 et leurs photos choisies, puis importez un nouveau lot. Vérifiez
-les décisions et retouches avant validation et export. Les originaux restent intacts.
+les décisions du tri avant validation et export. Les originaux restent intacts.
 Les profils et lots Windows ne sont pas inclus dans le programme.
 
 La mémoire est conservée dans `~/Library/Application Support/AtelierPhoto`,

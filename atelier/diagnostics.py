@@ -86,7 +86,7 @@ def self_test(report_path):
             raise RuntimeError(f"Diagnostic du moteur : {job['error']} (code {code})")
         return job
 
-    # Two separate reportages exercise cumulative selection and a learned look.
+    # Two separate reportages exercise cumulative selection learning.
     rush = list(paths)
     for index in range(3, 12):
         path = root / f"test-{index}.png"
@@ -104,7 +104,7 @@ def self_test(report_path):
         {"name": "Diagnostic B", "rush": rush[6:], "kept": kept[3:]},
     ]))
     learned = store.model(profile)
-    assert (learned["reportages"], learned["photos"], learned["kept"], learned["pairs"]) == (2, 12, 6, 6)
+    assert (learned["reportages"], learned["photos"], learned["kept"]) == (2, 12, 6)
     execute(training_update_job(store, profile, store.reportages(profile),
                                 [{"name": "Références du diagnostic", "paths": paths}]))
     assert len(store.reference_groups(profile)) == 1
@@ -115,12 +115,12 @@ def self_test(report_path):
     assert len(rows) == 3 and all("error" not in r["data"] for r in rows)
     for row in rows:
         row["data"].update(decision="keep", manual_decision=True)
-    rows[0]["data"]["recipe"]["exposure"] += .2
     store.save_photos(rows)
     validation = store.validate(batch, profile)
     assert validation["updated"] >= 1 and validation["total"] >= 1
     exported = execute(export_job(store, batch, root / "exports"))
     assert len(exported["payload"]["outputs"]) == 3
+    assert sorted(digest(p) for p in exported["payload"]["outputs"]) == sorted(originals)
     assert [digest(p) for p in paths] == originals
     model_version = store.batch(batch)["snapshot"]["model"]
     store.close()
@@ -135,9 +135,8 @@ def self_test(report_path):
     while window.pixmap is None and time.monotonic() < limit:
         app.processEvents()
         time.sleep(.03)
-    assert window.pixmap is not None, "Le processus d’aperçu ne répond pas"
+    assert window.pixmap is not None, "L’aperçu de la photo ne s’affiche pas"
     assert window.model.rowCount() == 3
-    window.stop_preview()
     window.store.delete_batch(batch, profile)
     assert window.store.batches(profile) == []
     assert window.store.learning_count(profile) == validation["total"]
@@ -146,7 +145,7 @@ def self_test(report_path):
               "analyzed": 3, "exported": 3, "trained": True,
               "originals_unchanged": True, "spawn_workers": True, "qt_preview": True,
               "batch_deleted": True, "learning_preserved": True,
-              "training_reportages": learned["reportages"], "training_pairs": learned["pairs"]}
+              "training_reportages": learned["reportages"]}
     if os.name == "nt":
         from .dino import DinoEncoder
 

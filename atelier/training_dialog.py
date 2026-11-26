@@ -18,19 +18,12 @@ from PySide6.QtWidgets import (
 )
 
 from .config import PHOTO_FILTER, RAW_EXTENSIONS, discover
-from .xmp import find_sidecar
 
 
 def reference_kinds(paths):
-    """'2 RAW + XMP · 1 RAW seul · 3 JPEG/PNG' for a reference group."""
-    counts = {"RAW + XMP": 0, "RAW seul (ressemblance et cadrage)": 0, "JPEG/PNG": 0}
-    for path in paths:
-        if Path(path).suffix.lower() not in RAW_EXTENSIONS:
-            counts["JPEG/PNG"] += 1
-        elif find_sidecar(path):
-            counts["RAW + XMP"] += 1
-        else:
-            counts["RAW seul (ressemblance et cadrage)"] += 1
+    """'2 RAW · 3 JPEG/PNG' for a reference group."""
+    raw = sum(Path(path).suffix.lower() in RAW_EXTENSIONS for path in paths)
+    counts = {"RAW": raw, "JPEG/PNG": len(paths) - raw}
     return " · ".join(f"{n} {label}" for label, n in counts.items() if n)
 
 
@@ -77,12 +70,12 @@ class TrainingDialog(QDialog):
         self.add_references.clicked.connect(self.add_reference_group)
         for caption, text, control in (
             ("Reportages déjà triés", "Le rush complet + vos photos retenues, retouchées ou non. "
-             "Atelier apprend vos choix et les retouches associées. Pour apprendre le tri : "
+             "Atelier apprend quelles photos vous gardez et lesquelles vous écartez. Pour apprendre le tri : "
              "au moins 6 originaux, dont 2 retenus et 1 écarté. Plus vous ajoutez de reportages complets, "
              "plus le tri est fidèle.", self.add),
-            ("Photos de référence", "Des photos exemples sans leur rush associé : JPEG, RAW, ou RAW + XMP "
-             "(retouche Lightroom / Camera Raw lue à côté du fichier). Elles guident le classement "
-             "par ressemblance, le rendu et le cadrage. Un RAW sans XMP ne guide pas le rendu.", self.add_references),
+            ("Photos de référence", "Des photos exemples sans leur rush associé, RAW, JPEG ou PNG : "
+             "le type d’images que vous aimez garder. Au tri, les photos qui leur ressemblent montent "
+             "dans le classement, y compris pour choisir la meilleure variante d’une scène.", self.add_references),
         ):
             card = QFrame()
             card.setObjectName("guideCard")
@@ -222,7 +215,7 @@ class TrainingDialog(QDialog):
             f"{sum(len(r['kept']) for r in selected)} retenues"
             + f"\n{len(selected_groups)} / {len(groups)} groupe(s) de références cochés"
             + (f" · {removed} à retirer du profil" if removed else "")
-            + ("\nSans reportage coché : profil par défaut, complété par les références cochées." if not selected else ""))
+            + ("\nSans reportage coché : tri par défaut, complété par les références cochées." if not selected else ""))
         self.start.setText(("Appliquer et relancer l’apprentissage" if self.initial else "Lancer l’apprentissage")
                            if selected or selected_groups else "Appliquer les modifications")
         self.start.setEnabled(bool(selected or selected_groups) or changed)

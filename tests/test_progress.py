@@ -53,7 +53,7 @@ def test_progress_ui_hides_estimate_during_final_calculation_and_pause(qapp, sto
         window.events.put({"type": "progress", "current": 3, "total": 100, "label": "photo.jpg", "remaining_seconds": 180})
         window.poll()
         assert "Environ 3 min restantes" in window.progress_label.text()
-        window.events.put({"type": "phase", "label": "Calcul du profil et de la retouche…"})
+        window.events.put({"type": "phase", "label": "Calcul du profil de tri…"})
         window.poll()
         assert "Durée restante non estimable" in window.progress_label.text()
         assert "3 min" not in window.progress_label.text()

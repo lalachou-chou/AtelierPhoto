@@ -77,7 +77,7 @@ def test_selected_original_path_resolves_identical_camera_names():
     assert match(rush, [rush[1]]) == {0: 1}
 
 
-def test_multiple_reportages_cumulate_selection_and_look(store, tmp_path):
+def test_multiple_reportages_cumulate_selection(store, tmp_path):
     first, second = reportage(tmp_path, "A"), reportage(tmp_path, "B", 1)
     profile = store.create_profile("Progressif")
     job = execute(store, training_job(store, profile, **first), workers=2)
@@ -88,9 +88,10 @@ def test_multiple_reportages_cumulate_selection_and_look(store, tmp_path):
     job = execute(store, training_job(store, profile, **second), workers=2)
     assert job["state"] == "done", job["error"]
     model = store.model(profile)
-    assert (model["reportages"], model["photos"], model["kept"], model["pairs"]) == (2, 12, 6, 6)
+    assert (model["reportages"], model["photos"], model["kept"]) == (2, 12, 6)
     assert model["selector"]["rate"] == .5
-    assert model["look"] is not None
+    # Only the selection is learned: no colour look, rendering examples or crops.
+    assert not {"look", "examples", "crops", "pairs"} & model.keys()
     assert store.batch(batch)["snapshot"] == frozen
     # The same camera filenames in different reportages must never cross-match.
     combined = store.create_profile("En une fois")
@@ -98,7 +99,7 @@ def test_multiple_reportages_cumulate_selection_and_look(store, tmp_path):
     assert job["state"] == "done", job["error"]
     assert store.model(combined) == model
     assert store.snapshot(combined, Encoder.version)["selector"] == model["selector"]
-    assert store.snapshot(combined, Encoder.version)["look"] == model["look"]
+    assert "look" not in store.snapshot(combined, Encoder.version)
 
 
 class PauseAfter:
@@ -205,11 +206,11 @@ def test_no_match_or_mixed_encoder_cannot_teach_false_negatives(store, tmp_path)
         if row["role"] == "kept":
             data.update(name="unmatched.png", embedding=[0., 1., 0.])
         invalid.append(dict(row, reportage="unmatched", path="unmatched/" + row["id"], data=data))
-    model, warnings = learn(rows + invalid, lambda _: None, Encoder.version)
+    model, warnings = learn(rows + invalid, Encoder.version)
     assert model["photos"] == 6 and model["kept"] == 3
     assert any("sans correspondance" in w for w in warnings)
     invalid[0]["data"]["model"] = "legacy"
-    model, warnings = learn(rows + invalid, lambda _: None, Encoder.version)
+    model, warnings = learn(rows + invalid, Encoder.version)
     assert model["photos"] == 6
     assert any("ancien modèle" in w for w in warnings)
 
@@ -250,14 +251,11 @@ def test_catalog_selection_reuses_samples_and_removal_rebuilds_model(store, tmp_
     assert store.model(profile) == original_model
 
     removed_id = records[0]["id"]
-    samples = store.private_dir(profile, "training", removed_id)
-    assert any(samples.iterdir())
     job = execute(store, training_update_job(store, profile, records[1:]))
     assert job["state"] == "done", job["error"]
     assert store.model(profile)["photos"] == 6
     assert [r["id"] for r in store.reportages(profile)] == [records[1]["id"]]
     assert all(r["reportage"] != removed_id for r in store.training(profile))
-    assert not samples.exists()
     assert store.batch(batch)["snapshot"] == frozen
     assert all(Path(p).exists() for p in first["rush"] + first["kept"])
 
@@ -334,7 +332,7 @@ def test_management_rejects_foreign_ids_and_duplicate_rushs(store, tmp_path):
             training_update_job(store, target, catalog)
 
 
-def test_removing_reportage_with_small_remainder_keeps_only_its_style_examples(store, tmp_path):
+def test_removing_reportage_with_small_remainder_falls_back_to_default_selection(store, tmp_path):
     profile = store.create_profile("Petit reste")
     first, second = reportage(tmp_path, "A"), reportage(tmp_path, "B", 1)
     second["rush"], second["kept"] = second["rush"][:3], second["kept"][:2]
@@ -345,8 +343,8 @@ def test_removing_reportage_with_small_remainder_keeps_only_its_style_examples(s
     assert job["state"] == "done", job["error"]
     assert job["payload"]["warnings"]
     remaining_model = store.model(profile)
-    assert remaining_model["selector"] is None and remaining_model["look"] is None
-    assert remaining_model["photos"] == 3 and len(remaining_model["examples"]) == 2
+    assert remaining_model["selector"] is None
+    assert remaining_model["photos"] == 3 and remaining_model["kept"] == 2
     assert len(store.reportages(profile)) == 1
 
 
@@ -364,19 +362,15 @@ def test_catalog_removal_and_model_publish_are_atomic(store, tmp_path):
 
 
 def test_changing_training_reportages_preserves_validated_user_corrections(store, tmp_path):
-    from atelier.imaging import NEUTRAL
-
     profile = store.create_profile("Corrections conservées")
     assert execute(store, training_update_job(store, profile, [reportage(tmp_path, "A")]))["state"] == "done"
     batch = store.create_batch(profile, "Corrigé", store.snapshot(profile, Encoder.version), .5)
     store.save_photo(uid(), batch, tmp_path / "photo.jpg", {
         "embedding": [1., 0., 0.], "proposed": "keep", "decision": "reject", "manual_decision": True,
-        "initial_recipe": dict(NEUTRAL), "base_recipe": dict(NEUTRAL),
-        "recipe": dict(NEUTRAL, exposure=.25),
     })
     assert store.validate(batch, profile)["corrections"] == 1
     before = store.snapshot(profile, Encoder.version)["feedback"]
-    assert before[0]["decision"] == "reject" and before[0]["delta"]["exposure"] == .25
+    assert before == [{"embedding": [1., 0., 0.], "decision": "reject"}]
     assert execute(store, training_update_job(store, profile, [reportage(tmp_path, "B", 1)]))["state"] == "done"
     assert store.snapshot(profile, Encoder.version)["feedback"] == before
     assert execute(store, training_update_job(store, profile, []))["state"] == "done"

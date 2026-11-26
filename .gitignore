@@ -47,6 +47,10 @@ test-output/
 /photos/
 /rush/
 /exports/
+# Créés par l’application à côté des photos triées : quarantaine des fichiers
+# endommagés et fichiers temporaires d’un export interrompu
+Photos corrompues/
+.atelier-*.tmp
 
 # Configuration privée ; les exemples peuvent être versionnés
 .env

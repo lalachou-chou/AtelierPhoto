@@ -1,66 +1,21 @@
-import io
 import os
-import queue
 import shutil
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import numpy as np
-from PIL import Image, JpegImagePlugin
+from PIL import Image
 
-from . import lightroom, performance
-from . import local as local_edits
-from . import look as looks
-from . import tools as advanced
+from . import performance
 from .analysis import propose, reselect
-from .config import QUARANTINE_DIR, RAW_EXTENSIONS
+from .config import QUARANTINE_DIR
 from .dino import DinoEncoder
-from .imaging import (
-    SRGB,
-    CorruptPhoto,
-    active_crop,
-    active_recipe,
-    as_image,
-    capture_time,
-    cropped_pixels,
-    decode,
-    digest,
-    effective,
-    features,
-    look_strength,
-    render,
-    render_pixels,
-)
+from .imaging import CorruptPhoto, capture_time, decode, digest, features
 from .progress import ProgressEstimator
 from .recovery import recover_image
 from .store import Store, pack, uid
 from .training import learn
-from .xmp import (
-    apply_tones,
-    development,
-    find_sidecar,
-    raw_crop,
-    read_settings,
-    sidecar,
-)
-
-FORMATS = ("JPEG", "PNG", "TIFF", "RAW", "SOURCE")
-
-
-def decode_for_analysis(path):
-    try:
-        return decode(path, preview=True)
-    except (OSError, SyntaxError) as exc:
-        if isinstance(exc, OSError) and exc.errno is not None and exc.errno >= 0:
-            raise
-        source = Path(path)
-        if source.suffix.lower() in (".jpeg", ".jpg", ".png"):
-            with source.open("rb") as stream:
-                header = stream.read(8)
-            if header.startswith(b"\xff\xd8\xff") or header == b"\x89PNG\r\n\x1a\n":
-                raise CorruptPhoto(f"Photo endommagée ou incomplète : {exc}") from exc
-        raise ValueError(f"Photo illisible : {exc}") from exc
+from .xmp import companions
 
 
 def quarantine(path):
@@ -82,19 +37,19 @@ def quarantine(path):
                 break
         else:
             return None
+        sidecars = companions(source)
         # Same volume; never overwrite an earlier quarantined file.
         os.rename(source, target)
     except PermissionError:
         return None
-    for extension in (".xmp", ".XMP"):
-        companion = source.with_suffix(extension)
-        if companion.is_file():
-            try:
-                if not target.with_suffix(extension).exists():
-                    os.rename(companion, target.with_suffix(extension))
-            except OSError:
-                pass
-            break
+    for companion in sidecars:
+        # photo.xmp or photo.nef.xmp follows the renamed photo.
+        moved = target.with_name(target.stem + companion.name[len(source.stem):])
+        try:
+            if not moved.exists():
+                os.rename(companion, moved)
+        except OSError:
+            pass
     return str(target)
 
 
@@ -221,39 +176,15 @@ def training_update_job(store, profile, reportages, reference_groups=None):
     return store.new_job(profile, "training", payload)
 
 
-def reference_digest(path):
-    xmp_path = find_sidecar(path)
-    checksum = digest(path)
-    if xmp_path:
-        # A changed sidecar is a different reference.
-        checksum += ":xmp:" + digest(xmp_path)
-    return checksum, xmp_path
+def prepare_reference(path, encoder, checksum=None):
+    """CPU/IO work for one reference; the database stays in the job thread.
 
-
-def prepare_reference(path, encoder, identity=None):
-    """CPU/IO work for one reference; the database stays in the job thread."""
-    checksum, xmp_path = identity or reference_digest(path)
-    pixels, _ = decode_for_analysis(path)
-    raw = Path(path).suffix.lower() in RAW_EXTENSIONS
-    data = {"source": "raw" if raw else "image"}
-    if xmp_path:
-        developed = development(read_settings(xmp_path), path)
-        pixels = cropped_pixels(pixels, developed["crop"])
-        before = features(pixels)
-        recipe = {"intensity": 1., "exposure": 0., "temperature": 0., "contrast": 0., "saturation": 0.}
-        pixels = render_pixels(pixels, recipe, developed["style"], bit_depth=16,
-                               tools=developed.get("tools")).astype(np.float32) / 65535
-        pixels = apply_tones(pixels, developed["tones"])
-        # Relative target: the sidecar edit transfers to new photos as a change.
-        data.update(source=data["source"] + "+xmp", before=before, ignored=developed["ignored"])
-    elif raw:
-        # An undeveloped RAW shows resemblance and framing, not the delivered look.
-        data["render"] = False
-    image = as_image(pixels)
-    stats = features(pixels)
-    data.update(features=stats, embedding=encoder.encode(image), model=encoder.version)
-    if xmp_path:
-        data["after"] = stats
+    A reference only shows what the photographer likes: its content (DINOv3
+    vector) and its technical measures. Sidecars are not read.
+    """
+    checksum = checksum or digest(path)
+    image = decode(path)
+    data = {"features": features(image), "embedding": encoder.encode(image), "model": encoder.version}
     return {"digest": checksum, "data": data, "image": image}
 
 
@@ -267,14 +198,13 @@ def _save_reference(store, profile, path, encoder, group, prepared=None):
         reference = prepared()
         checksum = reference["digest"]
     else:
-        identity = reference_digest(path)
-        checksum = identity[0]
+        checksum = digest(path)
     existing = store.db.execute("SELECT id FROM refs WHERE profile=? AND digest=?", (profile, checksum)).fetchone()
     if existing:
         store.link_reference(profile, group, existing["id"], path)
         return
     if reference is None:
-        reference = prepare_reference(path, encoder, identity)
+        reference = prepare_reference(path, encoder, checksum)
     ref_id = uid()
     proxy = store.private_dir(profile, "references") / f"{ref_id}.png"
     reference["image"].save(proxy, compress_level=1)
@@ -285,20 +215,10 @@ def _save_reference(store, profile, path, encoder, group, prepared=None):
 def _save_training_photo(store, profile, reportage, item, photo, encoder_version):
     data = {"name": Path(item["path"]).name, "stats": photo["features"], "embedding": photo["embedding"],
             "time": photo["time"], "model": encoder_version}
-    sample_id = uid()
-    np.save(store.private_dir(profile, "training", reportage) / f"{sample_id}.npy",
-            photo["sample"].astype(np.float16))
-    store.add_training(sample_id, profile, reportage, item["role"], item["path"], data)
+    store.add_training(uid(), profile, reportage, item["role"], item["path"], data)
 
 
 def _finish_training(store, identifier, profile, payload, encoder_version):
-    def load(row):
-        path = store.private_dir(profile, "training", row["reportage"]) / f"{row['id']}.npy"
-        try:
-            return np.load(path, allow_pickle=False) if path.exists() else None
-        except ValueError as exc:
-            raise RuntimeError("Un échantillon enregistré est illisible : retirez puis ajoutez à nouveau ce reportage.") from exc
-
     if "selected_reportages" in payload:
         selected = set(payload["selected_reportages"])
         if payload.get("errors"):
@@ -306,17 +226,16 @@ def _finish_training(store, identifier, profile, payload, encoder_version):
         rows = [r for r in store.training(profile) if r["reportage"] in selected]
         if selected:
             try:
-                model, warnings = learn(rows, load, encoder_version)
+                model, warnings = learn(rows, encoder_version)
             except ValueError as exc:
                 # A removal must never leave the removed examples in the model,
                 # even when the remaining set is too small to train on its own.
                 model = None
-                warnings = [str(exc), "Sélection et filtre par défaut utilisés jusqu’à l’ajout de reportages exploitables."]
+                warnings = [str(exc), "Sélection par défaut utilisée jusqu’à l’ajout de reportages exploitables."]
         else:
             model, warnings = None, []
         payload["warnings"] = warnings
-        payload["summary"] = {k: (model or {}).get(k, 0) for k in ("reportages", "photos", "kept", "pairs", "crops")}
-        payload["summary"]["examples"] = len((model or {}).get("examples", []))
+        payload["summary"] = {k: (model or {}).get(k, 0) for k in ("reportages", "photos", "kept")}
         payload["summary"]["reference_groups"] = len(payload.get("selected_reference_groups", []))
         store.complete_training(identifier, model, payload)
         return
@@ -325,26 +244,16 @@ def _finish_training(store, identifier, profile, payload, encoder_version):
     current = {r["id"] for r in payload["reportages"]}
     if not any(row["reportage"] in current for row in rows):
         raise ValueError("Aucun nouveau reportage complet exploitable. Vérifiez les fichiers indiqués en erreur.")
-    model, warnings = learn(rows, load, encoder_version)
+    model, warnings = learn(rows, encoder_version)
     if payload.get("errors"):
         warnings.append("Les reportages contenant des fichiers illisibles ont été exclus de l’apprentissage.")
     payload["warnings"] = warnings
-    payload["summary"] = {k: model.get(k) for k in ("reportages", "photos", "kept", "pairs", "crops")}
-    payload["summary"]["examples"] = len(model.get("examples", []))
+    payload["summary"] = {k: model.get(k) for k in ("reportages", "photos", "kept")}
     store.complete_training(identifier, model, payload)
 
 
-def check_jpeg_quality(quality):
-    if quality not in ("maximum", "source") and (type(quality) is not int or not 1 <= quality <= 100):
-        raise ValueError("Choisissez la qualité source ou une qualité JPEG entre 1 et 100.")
-
-
-def export_job(store, batch, destination, format="JPEG", quality="maximum", replace=False):
-    check_jpeg_quality(quality)
-    if format not in FORMATS:
-        raise ValueError("Format d’export invalide")
-    if replace and format == "SOURCE":
-        raise ValueError("Une copie à l’identique ne peut pas remplacer les originaux.")
+def export_job(store, batch, destination):
+    """Copy the kept photos, byte for byte, with their XMP sidecars."""
     if not store.batch_ready(batch):
         raise ValueError("Terminez l’analyse ou le tri du lot avant l’export.")
     photos = store.photos(batch)
@@ -353,22 +262,11 @@ def export_job(store, batch, destination, format="JPEG", quality="maximum", repl
         raise ValueError("Aucune photo retenue à exporter.")
     if any(not r["data"].get("validated") for r in photos if "error" not in r["data"]):
         raise ValueError("Validez les propositions avant de les exporter.")
-    if any(r["data"].get("replaced") for r in items):
-        raise ValueError("Les originaux de ce lot ont déjà été remplacés par leur version retouchée. "
-                         "Réimportez ces photos pour les exporter à nouveau.")
     record = store.batch(batch)
-    export_items = []
-    for row in items:
-        # Everything export_one renders: global recipe, zone edits and advanced tools.
-        data = {k: row["data"].get(k) for k in ("digest", "recipe", "manual_recipe", "style", "local_edits",
-                                                 "tools", "initial_tools")}
-        data["crop"] = active_crop(row["data"], record["crops_enabled"])
-        export_items.append({"id": row["id"], "path": row["path"], "data": data})
+    export_items = [{"id": r["id"], "path": r["path"], "data": {"digest": r["data"]["digest"]}} for r in items]
     return store.new_job(record["profile"], "export", {
-        "batch": batch, "filter": record["filter_enabled"], "look": record["snapshot"].get("look"),
-        "items": export_items, "replace": bool(replace),
-        "destination": "" if replace else str(Path(destination).resolve()),
-        "format": format, "quality": quality, "outputs": [], "errors": []})
+        "batch": batch, "items": export_items, "destination": str(Path(destination).resolve()),
+        "outputs": [], "errors": []})
 
 
 def _reserve(path):
@@ -382,10 +280,8 @@ def _reserve(path):
 def _publish(destination, target, write):
     """Write through a same-volume temporary file, then replace our reservation."""
     fd, temporary = tempfile.mkstemp(prefix=".atelier-", suffix=".tmp", dir=destination)
-    os.close(fd)
     try:
-        # Reopen by path: writers such as tifffile read ``stream.name`` as a path.
-        with open(temporary, "wb") as stream:
+        with open(fd, "wb") as stream:
             write(stream)
             stream.flush()
             os.fsync(stream.fileno())
@@ -422,161 +318,30 @@ def recovery_job(store, profile, paths, destination):
                                                "outputs": [], "errors": []})
 
 
-SAME_FORMAT = {"JPEG": (".jpg", ".jpeg"), "PNG": (".png",), "TIFF": (".tif", ".tiff")}
+def export_one(row, destination):
+    """Identical copy of a kept photo and its sidecars, never overwriting a file.
 
-
-def _replace_original(source, format, suffix, raw_copy, write_xmp, copy_jpeg, build_xmp, write_render):
-    """Replace the original by its retouched version, in its own folder.
-
-    The new file is fully written and synced before the original disappears:
-    an interruption leaves either the original or the result, never neither.
+    The original name is kept when free, otherwise `` (2)``, `` (3)``… is added.
+    Names are reserved exclusively, written through a same-volume temporary
+    file, and the copy is checked against the digest measured at import.
     """
-    folder = source.parent
-    if raw_copy:
-        # The RAW stays untouched: only its Adobe-style sidecar is (re)written.
-        if write_xmp:
-            # Exact names: on case-insensitive volumes "x.xmp" also matches "x.XMP".
-            names = set(os.listdir(folder))
-            target = next((source.with_suffix(e) for e in (".xmp", ".XMP") if source.with_suffix(e).name in names),
-                          source.with_suffix(".xmp"))
-            xmp = build_xmp()
-            _publish(folder, target, lambda stream: stream.write(xmp))
-        return str(source)
-    if copy_jpeg:
-        return str(source)  # Nothing to change: the original already is the result.
-    if source.suffix.lower() in SAME_FORMAT[format]:
-        write_render(folder, source)  # Atomic same-name replacement.
-        return str(source)
-    target = source.with_suffix(suffix)
-    number = 0
-    while not _reserve(target):
-        # Never overwrite another file, e.g. the camera JPEG of a RAW + JPEG pair.
-        number += 1
-        if number >= 100000:
-            raise OSError("Impossible de réserver un nom pour la photo remplacée.")
-        target = source.with_name(f"{source.stem[:120]}_Atelier_{number:03}{suffix}")
-    try:
-        write_render(folder, target)
-    except BaseException:
-        target.unlink(missing_ok=True)
-        raise
-    source.unlink()
-    return str(target)
-
-
-def export_one(row, destination, format, enabled=True, look=None, quality="maximum", replace=False):
-    """Exclusive filename reservation, same-volume atomic publish, immutable source.
-
-    ``RAW`` copies RAW originals bit for bit with an XMP sidecar holding the
-    correction. For other sources it uses the regular JPEG export.
-    With the batch filter off, only edits made from the neutral starting point apply.
-    ``replace`` writes the result next to the original and removes the original
-    instead (see _replace_original); ``destination`` is then unused.
-    """
-    check_jpeg_quality(quality)
-    if replace and format == "SOURCE":
-        raise ValueError("Une copie à l’identique ne peut pas remplacer son original.")
     destination = Path(destination)
-    if not replace:
-        destination.mkdir(parents=True, exist_ok=True)
+    destination.mkdir(parents=True, exist_ok=True)
     source = Path(row["path"])
-    if replace and not source.is_file():
-        # E.g. resumed after an interruption that came right after this replacement.
-        raise ValueError("Original introuvable : il a peut-être déjà été remplacé.")
     if digest(source) != row["data"]["digest"]:
         raise ValueError("L’original a changé depuis son analyse : réimportez-le.")
-    data = row["data"]
-    recipe = active_recipe(data, enabled)
-    batch_filter = enabled
-    enabled = enabled or bool(data.get("manual_recipe"))
-    style = data["style"] if enabled else {}
-    active_look = look if enabled else None
-    crop = data.get("crop")
-    if crop and tuple(crop) == (0, 0, 1, 1):
-        crop = None
-    # Zone edits are explicit photographer choices: they apply in both modes.
-    local = local_edits.applied(data.get("local_edits"), batch_filter)
-    tools = advanced.active(data, batch_filter)
-    global_edits = any(effective(recipe, style).values())
-    # Zone edits become Lightroom masks in the sidecar (see lightroom.py).
-    raw_copy = format == "RAW" and source.suffix.lower() in RAW_EXTENSIONS
-    write_xmp = raw_copy and (global_edits or bool(crop) or bool(local) or bool(tools))
-    source_copy = format == "SOURCE"
-    companions = {}
-    if source_copy:
-        # Adobe replaces the extension; darktable appends .xmp. Probe each naming
-        # convention once, including on case-insensitive macOS volumes.
-        for stem in (source.stem, source.name):
-            for extension in (".xmp", ".XMP"):
-                path = source.with_name(stem + extension)
-                if path.is_file():
-                    companions[path] = path.name[len(source.stem):]
-                    break
-    if format == "RAW" and not raw_copy:
-        format = "JPEG"
-    copy_jpeg = False
-    automatic_quality = quality in ("maximum", "source")
-    jpeg_options = {"quality": 100 if automatic_quality else quality, "subsampling": 0}
-    if format == "JPEG" and source.suffix.lower() not in RAW_EXTENSIONS and automatic_quality:
-        with Image.open(source) as original:
-            if original.format == "JPEG":
-                copy_jpeg = not (crop or global_edits or local or tools or look_strength(recipe, style, active_look))
-                if quality == "source" and original.mode == "RGB" and original.quantization and not copy_jpeg:
-                    sampling = JpegImagePlugin.get_sampling(original)
-                    jpeg_options = {"qtables": original.quantization, "subsampling": max(0, sampling)}
-    suffix = source.suffix if raw_copy or source_copy else {"JPEG": ".jpg", "PNG": ".png", "TIFF": ".tif"}[format]
-
-    def build_xmp():
-        flip = 0
-        if crop or local:
-            import rawpy
-            with rawpy.imread(str(source)) as raw:
-                flip = raw.sizes.flip
-        masks = ""
-        if local:
-            small = None
-            if any(z in lightroom.SAMPLED for e in local for z in e.get("zones") or ()):
-                # Colour ranges are sampled on the developed, framed photo.
-                preview, _ = decode(source, preview=True)
-                small = render_pixels(local_edits.proxy(cropped_pixels(preview, crop)), recipe, style,
-                                      active_look, tools=tools).astype(np.float32) / 65535
-            masks = lightroom.corrections(local, crop=crop, flip=flip, small=small)
-        return sidecar(recipe, style, enabled, crop=crop and raw_crop(crop, flip), tools=tools, masks=masks)
-
-    def write_render(folder, target):
-        pixels, metadata = decode(source)
-        pixels = cropped_pixels(pixels, crop)
-        if format == "TIFF":
-            import tifffile
-
-            pixels = render_pixels(pixels, recipe, style, active_look, local=local, tools=tools)
-            # Uncompressed RGB16 needs no optional codecs and preserves every
-            # rendered sample. Do not pass through Pillow's 8-bit RGB mode.
-            _publish(folder, target, lambda stream: tifffile.imwrite(
-                stream, pixels, photometric="rgb", metadata=None, iccprofile=SRGB,
-                software="Atelier Photo", rowsperstrip=128))
-        else:
-            image = render(pixels, recipe, style, active_look, local=local, tools=tools)
-            _publish(folder, target, lambda stream: image.save(
-                stream, format=format, icc_profile=SRGB, **metadata,
-                **(jpeg_options if format == "JPEG" else {})))
-
-    if replace:
-        return _replace_original(source, format, suffix, raw_copy, write_xmp, copy_jpeg, build_xmp, write_render)
-    stem = f"{source.stem[:120]}_Atelier"
+    # Ending of each sidecar after the photo stem: ".xmp" or ".nef.xmp".
+    sidecars = {path: path.name[len(source.stem):] for path in companions(source)}
     reserved = []
     try:
         for number in range(1, 100000):
-            candidate = destination / f"{stem}_{number:03}{suffix}"
-            if raw_copy and any(candidate.with_name(base + ext).exists()
-                                for base in (candidate.stem, candidate.name) for ext in (".xmp", ".XMP")):
-                continue
+            stem = source.stem if number == 1 else f"{source.stem} ({number})"
+            candidate = destination / (stem + source.suffix)
             if not _reserve(candidate):
                 continue
             reserved.append(candidate)
-            sidecars = [".xmp"] if write_xmp else companions.values()
-            for ending in sidecars:
-                target = candidate.with_name(candidate.stem + ending)
+            for ending in sidecars.values():
+                target = destination / (stem + ending)
                 if not _reserve(target):
                     break
                 reserved.append(target)
@@ -587,21 +352,15 @@ def export_one(row, destination, format, enabled=True, look=None, quality="maxim
             reserved.clear()
         if not reserved:
             raise OSError("Impossible de réserver un nom d’export")
-        if raw_copy or source_copy or copy_jpeg:
-            def copy(stream, path=source):
-                with open(path, "rb") as original:
-                    shutil.copyfileobj(original, stream, 1024 * 1024)
-            _publish(destination, reserved[0], copy)
-            if digest(reserved[0]) != row["data"]["digest"]:
-                raise OSError("La copie ne correspond pas à l’original.")
-            if write_xmp:
-                xmp = build_xmp()
-                _publish(destination, reserved[1], lambda stream: stream.write(xmp))
-            else:
-                for path, target in zip(companions, reserved[1:], strict=True):
-                    _publish(destination, target, lambda stream, p=path: copy(stream, p))
-        else:
-            write_render(destination, reserved[0])
+
+        def copy(stream, path=source):
+            with open(path, "rb") as original:
+                shutil.copyfileobj(original, stream, 1024 * 1024)
+        _publish(destination, reserved[0], copy)
+        if digest(reserved[0]) != row["data"]["digest"]:
+            raise OSError("La copie ne correspond pas à l’original.")
+        for path, target in zip(sidecars, reserved[1:], strict=True):
+            _publish(destination, target, lambda stream, p=path: copy(stream, p))
         return str(reserved[0])
     except BaseException:
         for path in reserved:
@@ -609,15 +368,13 @@ def export_one(row, destination, format, enabled=True, look=None, quality="maxim
         raise
 
 
-def prepare_photo(path, encoder, training=False, with_look=False):
+def prepare_photo(path, encoder, training=False):
     """CPU/IO work only: database writes remain ordered in the job process."""
     checksum = None if training else digest(path)
-    pixels, _ = decode_for_analysis(path)
-    image = as_image(pixels)
-    return {"image": image, "features": features(pixels),
+    image = decode(path)
+    return {"image": image, "features": features(image),
             "embedding": encoder.encode(image), "digest": checksum,
-            "time": capture_time(path),
-            "sample": looks.sample(pixels) if training or with_look else None}
+            "time": capture_time(path)}
 
 
 def run_job(root, identifier, events, cancel, encoder_factory=DinoEncoder, preparation_workers=None, load=None):
@@ -641,6 +398,10 @@ def run_job(root, identifier, events, cancel, encoder_factory=DinoEncoder, prepa
         if kind == "selection":
             _run_selection(store, identifier, payload, events, cancel)
             return
+        if kind == "export" and (payload.get("replace") or not payload.get("destination")):
+            # Written by a version that could replace originals by retouched copies.
+            raise ValueError("Cette tâche d’export d’une version précédente n’est plus prise en charge : "
+                             "supprimez-la dans « Gérer les tâches » et exportez à nouveau.")
         needs_encoder = kind == "analysis" or (kind == "training" and bool(payload["items"]))
         mode = performance.read_mode(load)
         current = performance.plan(mode)
@@ -694,7 +455,7 @@ def run_job(root, identifier, events, cancel, encoder_factory=DinoEncoder, prepa
             if kind == "training" and item["role"] == "reference":
                 return prepare_reference(item["path"], encoder)
             path = item["path"] if kind == "training" else item
-            return prepare_photo(path, encoder, kind == "training", bool(snapshot and snapshot.get("look")))
+            return prepare_photo(path, encoder, kind == "training")
 
         def wanted(index):
             """Whether the job loop will ask for this photo (checked in the job thread)."""
@@ -760,13 +521,7 @@ def run_job(root, identifier, events, cancel, encoder_factory=DinoEncoder, prepa
                         store.db.execute("UPDATE jobs SET cursor=?,payload=? WHERE id=?", (index + 1, pack(payload), identifier))
                     continue
                 elif kind == "export":
-                    replace = payload.get("replace", False)
-                    output = export_one(item, payload["destination"], payload["format"], payload["filter"],
-                                        payload["look"], payload["quality"], replace=replace)
-                    payload["outputs"].append(output)
-                    if replace and (output != item["path"] or digest(output) != item["data"]["digest"]):
-                        # The original is gone: block a second export that would retouch twice.
-                        store.mark_replaced(item["id"], output)
+                    payload["outputs"].append(export_one(item, payload["destination"]))
                 elif kind == "training":
                     reportage = item["reportage"]
                     if item["path"] in moved:
@@ -786,7 +541,7 @@ def run_job(root, identifier, events, cancel, encoder_factory=DinoEncoder, prepa
                         try:
                             photo = prepared(index)
                             image, stats, embedding = photo["image"], photo["features"], photo["embedding"]
-                            data = propose(stats, embedding, snapshot, payload["selectivity"], photo["sample"])
+                            data = propose(stats, embedding, snapshot, payload["selectivity"])
                             data.update({"digest": photo["digest"], "features": stats, "embedding": embedding,
                                          "time": photo["time"]})
                             proxy = store.private_dir(profile, "batches", batch_id) / f"{photo_id}.png"
@@ -824,7 +579,7 @@ def run_job(root, identifier, events, cancel, encoder_factory=DinoEncoder, prepa
             else:
                 store.update_job(identifier, cursor=index + 1, payload=payload)
         if kind in ("analysis", "training"):
-            label = "Finalisation du tri…" if kind == "analysis" else "Calcul du profil et de la retouche…"
+            label = "Finalisation du tri…" if kind == "analysis" else "Calcul du profil de tri…"
             events.put({"type": "phase", "label": label})
         if kind == "analysis":
             # Atomic scene selection: no half-decided batches after an interruption.
@@ -844,35 +599,3 @@ def run_job(root, identifier, events, cancel, encoder_factory=DinoEncoder, prepa
         if pool is not None:
             pool.shutdown(wait=True, cancel_futures=True)
         store.close()
-
-
-def preview_worker(input_queue, output_queue):
-    """Separate process for decoding/rendering previews; newest request wins."""
-    from PIL import Image
-    cached = (None, None)
-    while True:
-        task = input_queue.get()
-        if task is None:
-            return
-        try:
-            while True:
-                newer = input_queue.get_nowait()
-                if newer is None:
-                    return
-                task = newer
-        except queue.Empty:
-            pass
-        try:
-            # Slider moves re-render the same photo: decode it only once.
-            if cached[0] != task["path"]:
-                with Image.open(task["path"]) as image:
-                    image.thumbnail((1100, 850))
-                    cached = (task["path"], np.asarray(image.convert("RGB"), dtype=np.float32) / 255)
-            pixels = cropped_pixels(cached[1], task.get("crop"))
-            image = as_image(pixels) if task["before"] else render(pixels, task["recipe"], task["style"], task.get("look"),
-                                                                    local=task.get("local"), tools=task.get("tools"))
-            buffer = io.BytesIO()
-            image.save(buffer, format="PNG", compress_level=1)
-            output_queue.put({"token": task["token"], "bytes": buffer.getvalue()})
-        except Exception as exc:  # noqa: BLE001 - preview worker reports failures across processes
-            output_queue.put({"token": task["token"], "error": str(exc)})

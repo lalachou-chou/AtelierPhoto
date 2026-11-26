@@ -8,7 +8,6 @@ les paquets doivent être inclus dans le bundle de distribution.
   https://doc.qt.io/qtforpython-6/licenses.html
 - NumPy — BSD-3-Clause. https://numpy.org/doc/stable/license.html
 - Pillow 12.3 — MIT-CMU. https://github.com/python-pillow/Pillow/blob/main/LICENSE
-- tifffile — BSD-3-Clause. https://github.com/cgohlke/tifffile/blob/master/LICENSE
 - rawpy — MIT ; LibRaw et dépendances selon leurs licences embarquées.
   https://github.com/letmaik/rawpy
 - ONNX Runtime — MIT. https://github.com/microsoft/onnxruntime/blob/main/LICENSE

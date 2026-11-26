@@ -9,9 +9,9 @@ from PIL import Image
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QFileDialog, QTextBrowser
 
-from atelier.analysis import LEARNED_NEUTRAL, finalize, propose
+from atelier.analysis import finalize, propose
 from atelier.app import Window
-from atelier.imaging import color_features, features, render
+from atelier.imaging import digest
 from atelier.pipeline import run_job, training_update_job
 from atelier.selection import FEATURE_VERSION, TECH_KEYS
 from atelier.store import Store
@@ -74,14 +74,14 @@ def test_reference_import_resume_duplicates_and_frozen_batches(store, tmp_path):
 @pytest.mark.parametrize("source", ["profil par défaut", "profil"])
 def test_references_influence_compatible_selector_without_overriding_technical_rejects(source):
     stats = {"luma": .5, "spread": .2, "saturation": .2, "sharpness": .01,
-             "peak": .02, "noise": .001, "black": 0., "white": 0., "rgb": [.5] * 3}
+             "peak": .02, "noise": .001, "black": 0., "white": 0.}
     dimension = len(TECH_KEYS) + 8 + 2
     weights = [0.] * dimension
     weights[-2] = 1.  # The selector initially favours the first embedding direction.
     selector = {"mu": [0.] * dimension, "sd": [1.] * dimension, "w": weights, "b": 0.,
                 "feature_version": FEATURE_VERSION, "dimension": 2, "encoder": "test",
                 "rate": .1, "source": source}
-    snapshot = {"model": "test", "selector": selector, "look": None, "references": [], "feedback": []}
+    snapshot = {"model": "test", "selector": selector, "references": [], "feedback": []}
     rows = []
     for i, angle in enumerate(np.linspace(0., np.pi / 2, 12)):
         embedding = [float(np.cos(angle)), float(np.sin(angle))]
@@ -102,42 +102,58 @@ def test_references_influence_compatible_selector_without_overriding_technical_r
     assert sum(int(i) for i in after) > sum(int(i) for i in before)
 
 
-def learned_look():
-    grid = np.stack(np.meshgrid(*[[0., 1.]] * 3, indexing="ij"), -1).reshape(-1, 3)
-    coef = np.zeros((16, 9))
-    coef[0] = .1
-    return {"lut_size": 2, "lut": grid.tolist(),
-            "tone": {"mu": [0.] * 15, "sd": [1.] * 15, "coef": coef.tolist()}}
+STATS = {"luma": .5, "spread": .2, "saturation": .2, "sharpness": .01,
+         "peak": .02, "noise": .001, "black": 0., "white": 0.}
 
 
-@pytest.mark.parametrize("with_look", [False, True])
-def test_references_change_render_and_preserve_learned_look(with_look):
-    pixels = np.random.default_rng(4).uniform(.1, .4, (32, 48, 3)).astype(np.float32)
-    stats = features(pixels)
-    snapshot = {"references": [], "feedback": [], "look": learned_look() if with_look else None}
-    baseline = propose(stats, [1., 0.], snapshot, small=pixels)
-    target = dict(stats, luma=.6, spread=.4, saturation=.7, rgb=[.7, .5, .3])
-    snapshot["references"] = [{"embedding": [1., 0.], "features": target}]
-    result = propose(stats, [1., 0.], snapshot, small=pixels)
-    assert all(result["style"][key] > 0 for key in ("exposure", "temperature", "contrast", "saturation"))
-    if with_look:
-        assert result["style"]["knots"] == baseline["style"]["knots"]
-    original = render(pixels, baseline["recipe"], baseline["style"], snapshot["look"])
-    changed = render(pixels, result["recipe"], result["style"], snapshot["look"])
-    assert not np.array_equal(original, changed)
+def burst(snapshot, embeddings):
+    """One scene: frames one second apart, technically identical."""
+    rows = []
+    for i, embedding in enumerate(embeddings):
+        data = propose(STATS, embedding, snapshot)
+        data.update(features=STATS, embedding=embedding, time=1000. + i, digest=str(i))
+        rows.append({"id": str(i), "path": f"{i}.jpg", "data": data})
+    return finalize(rows, snapshot)
 
 
-def test_references_already_matching_learned_render_do_not_double_correction():
-    pixels = np.full((32, 48, 3), .25, dtype=np.float32)
-    snapshot = {"references": [], "feedback": [], "look": learned_look()}
-    stats = features(pixels)
-    initial = propose(stats, [1., 0.], snapshot, small=pixels)
-    target = color_features(render(pixels, LEARNED_NEUTRAL, initial["style"], snapshot["look"]))
-    snapshot["references"] = [{"embedding": [1., 0.], "features": target}]
-    result = propose(stats, [1., 0.], snapshot, small=pixels)
-    for key in ("exposure", "temperature", "contrast", "saturation"):
-        assert result["style"][key] == pytest.approx(0., abs=1e-6)
-    assert result["style"]["knots"] == initial["style"]["knots"]
+def test_references_choose_the_variant_kept_in_a_scene():
+    # Three close variants of the same moment, which the selection model cannot separate.
+    embeddings = [[float(np.cos(a)), float(np.sin(a))] for a in (0., .12, .24)]
+    dimension = len(TECH_KEYS) + 8 + 2
+    selector = {"mu": [0.] * dimension, "sd": [1.] * dimension, "w": [0.] * dimension, "b": 0.,
+                "feature_version": FEATURE_VERSION, "dimension": 2, "encoder": "test", "rate": .1, "source": "profil"}
+    snapshot = {"model": "test", "selector": selector, "references": [], "feedback": []}
+    plain = burst(snapshot, embeddings)
+    assert len({r["data"]["group"] for r in plain}) == 1 and plain[0]["data"]["group"]
+    snapshot["references"] = [{"embedding": [float(np.cos(.6)), float(np.sin(.6))], "features": STATS}]
+    guided = burst(snapshot, embeddings)
+    kept = [r["id"] for r in guided if r["data"]["decision"] == "keep"]
+    assert kept == ["2"]
+    assert [r["id"] for r in plain if r["data"]["decision"] == "keep"] != kept
+    assert guided[2]["data"]["reasons"][0].startswith("Meilleure image de la scène")
+    assert any(reason.startswith("Proche de vos références") for reason in guided[2]["data"]["reasons"])
+
+
+def test_photo_far_from_references_is_reviewed_without_learned_selector():
+    snapshot = {"model": "test", "references": [{"embedding": [1., 0.], "features": STATS}], "feedback": []}
+    close = propose(STATS, [1., 0.], snapshot)
+    far = propose(STATS, [0., 1.], snapshot)
+    assert close["proposed"] == "keep" and close["similarity"] == pytest.approx(1.)
+    assert far["proposed"] == "review"
+    assert "Éloignée des références : décision à confirmer" in far["reasons"]
+    # Proposals carry only sorting data: nothing to render, crop or retouch.
+    assert set(close) == {"proposed", "decision", "reasons", "similarity", "preference", "blocked", "validated", "group"}
+
+
+def test_reference_ignores_its_sidecar(store, tmp_path):
+    profile = store.create_profile("XMP")
+    path = tmp_path / "ref.png"
+    Image.new("RGB", (32, 32), "orange").save(path)
+    path.with_suffix(".xmp").write_text("<x:xmpmeta crs:Exposure2012=\"+4\"/>", encoding="utf-8")
+    assert execute(store, training_update_job(store, profile, [], [{"name": "R", "paths": [str(path)]}]))["state"] == "done"
+    data = store.references(profile)[0]["data"]
+    assert set(data) == {"features", "embedding", "model"}
+    assert store.references(profile)[0]["digest"] == digest(path)
 
 
 def test_reference_button_creates_job_and_help_explains_unpaired_photos(qapp, store, tmp_path, monkeypatch):
@@ -178,7 +194,8 @@ def test_reference_button_creates_job_and_help_explains_unpaired_photos(qapp, st
             assert "Ajouter des références" in text
             assert "Les lots déjà importés gardent leurs propositions" in text
             assert "poids DINOv3" not in text
-            assert "Copie à l’identique" in text and "JPEG" in text and "XMP" in text
+            assert "à l’identique" in text and "JPEG" in text and "XMP" in text
+            assert "Retouche par consigne" not in text and "Recadrer" not in text
             assert advanced.document().blockCount() > 20
             return QDialog.DialogCode.Rejected
 

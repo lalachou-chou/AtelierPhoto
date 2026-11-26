@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QDialog, QFileDialog, QPushButton
 
 from atelier.app import Window
 from atelier.help_ui import STEPS, GuideDialog
-from atelier.imaging import IDENTITY_RECIPE, IDENTITY_STYLE, digest
+from atelier.imaging import digest
 from atelier.pipeline import export_one
 from atelier.store import uid
 from atelier.training_dialog import TrainingDialog
@@ -48,7 +48,6 @@ def test_visible_profile_and_manager_share_examples_and_lots(qapp, store, monkey
     with store.db:
         store.db.execute("INSERT INTO reference_groups VALUES('group',?,'Exemples','[]',1,1)", (second,))
     store.add_reference(second, uid(), "unique", "Exemple", {"embedding": [1., 0.]}, group="group", path="exemple.jpg")
-    monkeypatch.setattr(Window, "request_preview", lambda *_: None)
     window = Window(store.root)
     try:
         window.show()
@@ -80,22 +79,37 @@ def test_visible_profile_and_manager_share_examples_and_lots(qapp, store, monkey
         reopened.close()
 
 
-def test_copy_rendered_file_and_external_sidecars_without_recompression(tmp_path):
+def test_export_copies_file_and_sidecars_identically_without_overwriting(tmp_path):
     source = tmp_path / "ma retouche.jpg"
     Image.new("RGB", (16, 12), "orange").save(source, quality=78, comment=b"mon export")
     source.with_suffix(".xmp").write_bytes(b"mes reglages")
     Path(str(source) + ".xmp").write_bytes(b"autre developpement")
     destination = tmp_path / "exports"
     destination.mkdir()
-    collision = destination / "ma retouche_Atelier_001.xmp"
+    # Only the sidecar name is taken: the whole set moves to the next free name.
+    collision = destination / "ma retouche.xmp"
     collision.write_bytes(b"existant")
-    row = {"path": str(source), "data": {"digest": digest(source), "recipe": IDENTITY_RECIPE, "style": IDENTITY_STYLE}}
-    target = Path(export_one(row, destination, "SOURCE"))
+    row = {"path": str(source), "data": {"digest": digest(source)}}
+    target = Path(export_one(row, destination))
+    assert target.name == "ma retouche (2).jpg"
     assert target.read_bytes() == source.read_bytes()
     assert target.with_suffix(".xmp").read_bytes() == b"mes reglages"
     assert Path(str(target) + ".xmp").read_bytes() == b"autre developpement"
     assert collision.read_bytes() == b"existant"
-    assert not collision.with_suffix(".jpg").exists()
+    assert not (destination / "ma retouche.jpg").exists()
+    again = Path(export_one(row, destination))
+    assert again.name == "ma retouche (3).jpg" and again.read_bytes() == source.read_bytes()
+    source.write_bytes(b"modifie")
+    with pytest.raises(ValueError, match="changé"):
+        export_one(row, destination)
+
+
+def test_export_keeps_original_name_when_free(tmp_path):
+    source = tmp_path / "DSC0001.png"
+    Image.new("RGB", (8, 8), "blue").save(source)
+    target = Path(export_one({"path": str(source), "data": {"digest": digest(source)}}, tmp_path / "out"))
+    assert target.name == "DSC0001.png" and digest(target) == digest(source)
+    assert sorted(p.name for p in target.parent.iterdir()) == ["DSC0001.png"]
 
 
 @pytest.mark.parametrize("cancel", [True, False])
@@ -158,14 +172,11 @@ def test_panel_preferences_and_intro_survive_restart(qapp, store, monkeypatch, t
         window.close()
 
 
-def test_viewer_navigation_and_manual_recipe(qapp, store, monkeypatch):
+def test_viewer_navigation_and_decisions(qapp, store, monkeypatch):
     profile = store.create_profile("A")
     batch = store.create_batch(profile, "Vue", {}, .5)
-    recipe = dict(IDENTITY_RECIPE, intensity=.7)
-    for i in range(2):
-        store.save_photo(uid(), batch, f"{i}.png", {"decision": "keep", "reasons": [], "style": IDENTITY_STYLE,
-                                                   "recipe": recipe, "initial_recipe": recipe})
-    monkeypatch.setattr(Window, "request_preview", lambda *_: None)
+    for i in range(3):
+        store.save_photo(uid(), batch, f"{i}.png", {"decision": "keep", "reasons": []})
     window = Window(store.root)
     try:
         window.show()
@@ -179,16 +190,20 @@ def test_viewer_navigation_and_manual_recipe(qapp, store, monkeypatch):
             dialog.zoom.setChecked(True)
             assert dialog.photo.width() > dialog.area.maximumViewportSize().width() or (
                 dialog.photo.height() > dialog.area.maximumViewportSize().height())
+            assert dialog.decisions[0].isChecked() and dialog.decisions[0].isEnabled()
             dialog.next_photo.click()
-            assert window.current_photo["id"] != first and dialog.source is None
+            second = window.current_photo["id"]
+            # No analysis copy on disk in this test: the viewer says so instead of rendering.
+            assert second != first and dialog.source is None
+            dialog.decisions[2].click()
+            # Deciding in the enlarged view moves on, like on a light table.
+            assert window.current_photo["id"] not in (first, second)
+            assert next(r for r in store.photos(batch) if r["id"] == second)["data"]["decision"] == "reject"
             return QDialog.DialogCode.Rejected
 
         monkeypatch.setattr(PhotoViewer, "exec", inspect)
         window.large_button.click()
         assert window.viewer is None
-        window.neutral_button.click()
-        current = window.current_photo["id"]
-        assert next(r for r in store.photos(batch) if r["id"] == current)["data"]["recipe"] == IDENTITY_RECIPE
-        assert next(r for r in store.photos(batch) if r["id"] == first)["data"]["recipe"] == recipe
+        assert next(r for r in store.photos(batch) if r["id"] == first)["data"]["decision"] == "keep"
     finally:
         window.close()

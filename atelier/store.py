@@ -6,6 +6,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 # Bump on any schema change. Libraries from another schema are refused, not migrated.
+# Libraries written before editing was removed keep two unused batch columns
+# (filter_enabled, crops_enabled) and unused edit fields in their JSON: both are ignored.
 SCHEMA_VERSION = 8
 
 
@@ -14,7 +16,7 @@ def uid():
 
 
 def default_profile():
-    """Selection model and look shipped with the application (may be absent)."""
+    """Selection model shipped with the application (may be absent)."""
     from .config import resource_directory
     path = resource_directory() / "default_profile.json"
     try:
@@ -50,8 +52,7 @@ class Store:
         CREATE TABLE IF NOT EXISTS batches(
           id TEXT PRIMARY KEY, profile TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
           name TEXT NOT NULL, snapshot TEXT NOT NULL, selectivity REAL NOT NULL,
-          created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          filter_enabled INTEGER NOT NULL DEFAULT 1, crops_enabled INTEGER NOT NULL DEFAULT 1);
+          created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS photos(
           id TEXT PRIMARY KEY, batch TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
           path TEXT NOT NULL, data TEXT NOT NULL, UNIQUE(batch,path));
@@ -196,7 +197,7 @@ class Store:
         return bool(cursor.rowcount)
 
     def snapshot(self, profile, model):
-        """Frozen copy of everything a batch needs: references, corrections, learned model."""
+        """Frozen copy of everything a batch needs: references, corrections, selection model."""
         record = self.db.execute("SELECT * FROM profiles WHERE id=?", (profile,)).fetchone()
         if record is None:
             raise ValueError("Profil introuvable")
@@ -205,18 +206,13 @@ class Store:
         selector = next((s for s in (learned.get("selector"), default.get("selector"))
                          if s and s.get("encoder") == model), None)
         feedback = [json.loads(r["data"]) for r in self.rows("SELECT data FROM feedback WHERE profile=?", (profile,))]
-        feedback = [f for f in feedback if f.get("model") == model]
+        # Only sorting decisions are learned; older corrections may also hold edits, ignored here.
+        feedback = [{"embedding": f["embedding"], "decision": f.get("decision")} for f in feedback
+                    if f.get("model") == model and f.get("decision")]
         return {"version": record["version"], "model": model,
                 "references": [r["data"] for r in self.references(profile, active_only=True)],
                 "feedback": feedback,
-                "edit_feedback": [f for f in feedback if f.get("delta") or f.get("manual_settings")],
-                "crop_feedback": [f for f in feedback if "crop" in f],
-                "local_feedback": [f for f in feedback if f.get("local") or f.get("local_refused")],
-                "tools_feedback": [f for f in feedback if "tools" in f],
-                "examples": learned.get("examples", []) if learned.get("encoder") == model else [],
-                "personal_look": bool(learned.get("look")),
-                "selector": selector,
-                "look": learned.get("look") or default.get("look")}
+                "selector": selector}
 
     def model(self, profile):
         row = self.db.execute("SELECT model FROM profiles WHERE id=?", (profile,)).fetchone()
@@ -307,8 +303,6 @@ class Store:
             self.db.executemany("UPDATE reportages SET enabled=1,ready=1 WHERE profile=? AND id=?",
                                 [(job["profile"], r) for r in active])
             if "reference_catalog" in payload:
-                self.db.execute("UPDATE jobs SET state='superseded' WHERE profile=? AND kind='references' AND state!='done'",
-                                (job["profile"],))
                 self.db.execute("UPDATE reference_groups SET enabled=0 WHERE profile=?", (job["profile"],))
                 self.db.executemany("DELETE FROM reference_groups WHERE profile=? AND id=?",
                                     [(job["profile"], r) for r in payload["removed_reference_groups"]])
@@ -325,7 +319,9 @@ class Store:
                                 "(SELECT 1 FROM reference_members WHERE ref_id=refs.id)", (job["profile"],))
             self.db.execute("UPDATE jobs SET state='done', error='', payload=? WHERE id=?", (pack(payload), identifier))
 
-        # Only application-owned samples are removed; source photographs stay intact.
+        # Only application-owned files are removed; source photographs stay intact.
+        # training/<reportage>/ only exists in libraries written while edits were
+        # learned (colour samples); reference proxies are current.
         for target in removed_paths + orphan_paths:
             try:
                 if target in orphan_paths:
@@ -344,21 +340,6 @@ class Store:
 
     def batches(self, profile):
         return self.rows("SELECT id,name,created FROM batches WHERE profile=? ORDER BY rowid DESC", (profile,))
-
-    def set_filter(self, batch_id, enabled):
-        with self.db:
-            self.db.execute("UPDATE batches SET filter_enabled=? WHERE id=?", (int(bool(enabled)), batch_id))
-            self.db.execute("UPDATE photos SET data=json_set(data, '$.validated', json('false')) WHERE batch=? "
-                            "AND json_extract(data,'$.validated')=1 AND (json_type(data,'$.manual_recipe')='object' "
-                            "OR json_extract(data,'$.recipe')!=json_extract(data,'$.initial_recipe'))", (batch_id,))
-
-    def set_batch_crops(self, batch_id, enabled):
-        with self.db:
-            self.db.execute("UPDATE batches SET crops_enabled=? WHERE id=?", (int(enabled), batch_id))
-            # Each new bulk removal starts with every frame off, including frames
-            # individually reapplied during an earlier bulk removal.
-            self.db.execute("UPDATE photos SET data=json_remove(data,'$.crop_when_off') WHERE batch=? "
-                            "AND json_type(data,'$.crop_when_off') IS NOT NULL", (batch_id,))
 
     def learning_count(self, profile):
         return self.db.execute("SELECT COUNT(*) FROM feedback WHERE profile=?", (profile,)).fetchone()[0]
@@ -405,8 +386,8 @@ class Store:
             raise ValueError("Lot introuvable")
         row = dict(record)
         row["snapshot"] = json.loads(row["snapshot"])
-        row["filter_enabled"] = bool(row["filter_enabled"])
-        row["crops_enabled"] = bool(row["crops_enabled"])
+        row.pop("filter_enabled", None)
+        row.pop("crops_enabled", None)
         return row
 
     def photos(self, batch):
@@ -415,15 +396,6 @@ class Store:
     def save_photo(self, identifier, batch, path, data):
         with self.db:
             self.db.execute("INSERT INTO photos VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", (identifier, batch, str(path), pack(data)))
-
-    def mark_replaced(self, identifier, output):
-        """The original was replaced on disk by its exported version ``output``."""
-        with self.db:
-            row = self.db.execute("SELECT data FROM photos WHERE id=?", (identifier,)).fetchone()
-            if row:
-                data = json.loads(row["data"])
-                data["replaced"] = str(output)
-                self.db.execute("UPDATE photos SET data=? WHERE id=?", (pack(data), identifier))
 
     def save_photos(self, rows):
         with self.db:
@@ -480,9 +452,6 @@ class Store:
             raise ValueError("Ce lot n’appartient pas au profil sélectionné.")
         if not self.batch_ready(batch_id):
             raise ValueError("L’analyse ou le tri de ce lot doit être terminé avant validation.")
-        from . import tools as advanced
-        from .imaging import IDENTITY_RECIPE, NEUTRAL, active_crop
-        from .local import lessons
         changed = 0
         explicit_count = 0
         with self.db:
@@ -490,45 +459,12 @@ class Store:
                 d = row["data"]
                 if "error" in d:
                     continue
+                # Only explicit sorting choices teach the profile; accepting a proposal does not.
                 decision = d["decision"] if d.get("manual_decision") else None
-                # Turning off the batch look for viewing/export must not erase a
-                # deliberate correction recorded in the other editor mode.
-                manual = not batch["filter_enabled"] and bool(d.get("manual_recipe"))
-                recipe = (d.get("manual_recipe") or IDENTITY_RECIPE) if manual else d["recipe"]
-                initial = IDENTITY_RECIPE if manual else d["initial_recipe"]
-                adjusted = [k for k, v in initial.items() if abs(recipe[k] - v) > 1e-6]
-                base = d.get("base_recipe", NEUTRAL)
-                delta = {k: recipe[k] - base[k] for k in adjusted}
-                # Bulk removal is an export/view choice. Only individual edits
-                # teach a framing preference to the profile.
-                chosen_crop = active_crop(d)
-                crop_changed = chosen_crop != d.get("initial_crop")
-                # Zone edits are learned here only: at validation, never while editing.
-                # With the batch look removed, learned proposals are hidden, not refused.
-                local, refused = lessons(d.get("local_edits"), d.get("initial_local_edits"),
-                                         batch_filter=batch["filter_enabled"])
-                # Clarity, curve and HSL: learned when changed from the profile's proposal.
-                tools_changed = advanced.normalize(d.get("tools")) != advanced.normalize(d.get("initial_tools"))
-                explicit = (decision is not None or bool(adjusted) or crop_changed or bool(local or refused)
-                            or tools_changed)
-                explicit_count += bool(explicit)
+                explicit_count += decision is not None
                 old = self.db.execute("SELECT data FROM feedback WHERE profile=? AND photo=?", (batch["profile"], row["id"])).fetchone()
-                correction = {"embedding": d.get("embedding", []), "model": batch["snapshot"]["model"],
-                              "decision": decision, "delta": delta}
-                if manual and adjusted:
-                    # Manual mode starts at zero style intensity, even if the only
-                    # control the photographer moved was exposure or warmth.
-                    correction["manual_settings"] = dict(recipe)
-                if local:
-                    correction["local"] = local
-                if refused:
-                    correction["local_refused"] = refused
-                if tools_changed:
-                    correction["tools"] = advanced.active(d, batch["filter_enabled"]) or advanced.identity()
-                if crop_changed:
-                    correction.update(crop=chosen_crop or [0., 0., 1., 1.],
-                                      aspect=d.get("features", {}).get("aspect"))
-                value = pack(correction) if explicit and correction["embedding"] else None
+                correction = {"embedding": d.get("embedding", []), "model": batch["snapshot"]["model"], "decision": decision}
+                value = pack(correction) if decision is not None and correction["embedding"] else None
                 if (old[0] if old else None) != value:
                     changed += 1
                     if value is None:

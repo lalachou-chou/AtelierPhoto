@@ -1,4 +1,4 @@
-"""Rebuild the bundled selector from a labeled dataset; preserve the color look."""
+"""Rebuild the bundled selector from a labeled dataset."""
 import argparse
 import json
 import sys
